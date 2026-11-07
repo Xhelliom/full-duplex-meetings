@@ -45,32 +45,66 @@ function watchConnections(): void {
       super(...args);
       const id = ++n;
       const say = (m: string) => console.log(`[fdm-rtc] connexion ${id} : ${m}`);
-      let stuck: ReturnType<typeof setTimeout> | undefined;
-      this.addEventListener("connectionstatechange", () => {
-        say(`état ${this.connectionState}`);
-        clearTimeout(stuck);
-        if (this.connectionState === "connecting") stuck = setTimeout(() => void report(), 15_000);
-      });
-      // Bloquée en « connecting » : ce qu'elle transporte et ce qu'ICE a essayé.
-      const report = async () => {
-        const media = this.getTransceivers().map((t) => `${t.receiver.track?.kind ?? "?"}:${t.direction}`).join(" ") || "aucun";
+      // Instantané (toutes les 2 s tant qu'elle cherche à se connecter) : ce qu'elle transporte et ce
+      // qu'ICE a essayé. Journalisé si elle se ferme ou échoue sans s'être jamais connectée : une fois
+      // fermée, ses statistiques sont vides.
+      let connectedOnce = false;
+      let snapshot = "";
+      let reported = false;
+      const iceErrors: Record<string, number> = {};
+      const fmt = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k}×${v}`).join(" ") || "aucun";
+      const inc = (o: Record<string, number>, k: string) => (o[k] = (o[k] ?? 0) + 1);
+      const capture = async () => {
+        if (this.connectionState === "closed") return;
+        const kinds: Record<string, number> = {};
+        this.getTransceivers().forEach((t) => inc(kinds, `${t.receiver.track?.kind ?? "?"}:${t.direction}`));
         const servers = (this.getConfiguration().iceServers ?? [])
           .flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]))
-          .map((u) => u.replace(/\?.*$/, ""))
+          .map((u) => u.replace(/\?.*$/, "").replace(/^(turns?:)[^:]*/, "$1…"))
           .join(" ");
         const local: Record<string, number> = {};
         const remote: Record<string, number> = {};
         const pairs: Record<string, number> = {};
-        const stats = await this.getStats();
-        stats.forEach((s: any) => {
-          if (s.type === "local-candidate") local[`${s.candidateType}/${s.protocol}${s.relayProtocol ? "-" + s.relayProtocol : ""}`] = (local[`${s.candidateType}/${s.protocol}${s.relayProtocol ? "-" + s.relayProtocol : ""}`] ?? 0) + 1;
-          if (s.type === "remote-candidate") remote[`${s.candidateType}/${s.protocol}:${s.port}`] = (remote[`${s.candidateType}/${s.protocol}:${s.port}`] ?? 0) + 1;
-          if (s.type === "candidate-pair") pairs[s.state] = (pairs[s.state] ?? 0) + 1;
+        let sent = 0;
+        let answered = 0;
+        (await this.getStats()).forEach((s: any) => {
+          const family = String(s.address ?? "").includes(":") ? "v6" : "v4";
+          if (s.type === "local-candidate") inc(local, `${s.candidateType}/${s.protocol}${s.relayProtocol ? "-" + s.relayProtocol : ""}/${family}`);
+          if (s.type === "remote-candidate") inc(remote, `${s.candidateType}/${s.protocol}:${s.port}`);
+          if (s.type === "candidate-pair") {
+            inc(pairs, s.state);
+            sent += s.requestsSent ?? 0;
+            answered += s.responsesReceived ?? 0;
+          }
         });
-        const fmt = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k}×${v}`).join(" ") || "aucun";
-        say(`toujours « ${this.connectionState} » après 15 s — ICE ${this.iceConnectionState}, collecte ${this.iceGatheringState}, ` +
-          `signalisation ${this.signalingState} | médias ${media} | serveurs ${servers || "aucun"} | ` +
-          `candidats locaux ${fmt(local)} | distants ${fmt(remote)} | paires ${fmt(pairs)}`);
+        snapshot = `ICE ${this.iceConnectionState}, collecte ${this.iceGatheringState}, signalisation ${this.signalingState} | ` +
+          `médias ${fmt(kinds)} | serveurs ${servers || "aucun"} | candidats locaux ${fmt(local)} | distants ${fmt(remote)} | ` +
+          `paires ${fmt(pairs)} (vérifications envoyées ${sent}, réponses ${answered}) | erreurs ICE ${fmt(iceErrors)}`;
+      };
+      const reportIfNeverConnected = (why: string) => {
+        if (connectedOnce || reported || !snapshot) return;
+        reported = true;
+        say(`${why} sans s'être jamais connectée — ${snapshot}`);
+      };
+      // Dès sa création et jusqu'à ce qu'elle soit connectée.
+      let timer: ReturnType<typeof setInterval> | undefined = setInterval(() => void capture(), 2_000);
+      this.addEventListener("icecandidateerror", (e: any) => inc(iceErrors, `${e.errorCode} ${String(e.url ?? "").replace(/\?.*$/, "")}`));
+      this.addEventListener("connectionstatechange", () => {
+        const state = this.connectionState;
+        say(`état ${state}`);
+        if (state === "connected") {
+          connectedOnce = true;
+          clearInterval(timer);
+          timer = undefined;
+        }
+        if (state === "failed") void capture().then(() => reportIfNeverConnected("échec"));
+      });
+      // Teams ferme lui-même la connexion qui n'aboutit pas : close() ne déclenche aucun événement.
+      const realClose = this.close.bind(this);
+      this.close = () => {
+        clearInterval(timer);
+        reportIfNeverConnected("fermée par Teams");
+        realClose();
       };
       this.addEventListener("iceconnectionstatechange", () => {
         if (["failed", "disconnected"].includes(this.iceConnectionState)) say(`ICE ${this.iceConnectionState}`);

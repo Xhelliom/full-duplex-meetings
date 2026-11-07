@@ -88,6 +88,42 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
   }
 }
 
+/** Attend que le bot soit dans l'appel (entré automatiquement ou à la main via VNC), sans limite. */
+export async function waitInCall(page: Page): Promise<void> {
+  while (!page.isClosed()) {
+    if (await page.getByRole("button", { name: LEAVE }).first().isVisible().catch(() => false)) return;
+    await sleep(2_000);
+  }
+}
+
+const ALONE =/seule? personne (ici|dans (la|cette) réunion)|personne d'autre n'est là|only (one|person) (here|in this meeting)|no one else is here/i;
+
+/** Rend la main quand la réunion est finie pour le bot : il n'y est plus (fin de la réunion,
+ * retiré par l'organisateur, réseau perdu…), ou il y est seul depuis `aloneMs`. */
+export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs = 5 * 60_000): Promise<void> {
+  let goneSince = 0;
+  let aloneSince = 0;
+  for (;;) {
+    await sleep(5_000);
+    if (page.isClosed()) return;
+    const now = Date.now();
+    const inCall = await page.getByRole("button", { name: LEAVE }).first().isVisible().catch(() => false);
+    if (inCall) goneSince = 0;
+    else if (!goneSince) goneSince = now;
+    else if (now - goneSince >= 15_000) {
+      log("la réunion est terminée pour le bot (il n'y est plus)");
+      return;
+    }
+    const alone = inCall && (await page.getByText(ALONE).first().isVisible().catch(() => false));
+    if (!alone) aloneSince = 0;
+    else if (!aloneSince) aloneSince = now;
+    else if (now - aloneSince >= aloneMs) {
+      log(`seul dans la réunion depuis ${Math.round(aloneMs / 60_000)} min : il s'en va`);
+      return;
+    }
+  }
+}
+
 export async function leaveTeams(page: Page): Promise<void> {
   await clickFirst([page.getByRole("button", { name: LEAVE })], 2_000);
 }

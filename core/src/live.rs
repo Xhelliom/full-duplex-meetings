@@ -36,6 +36,21 @@ const TURN_GAP: Duration = Duration::from_millis(1200);
 /// Historique texte repassé à une nouvelle session (`input` est limité à ~8 k tokens).
 const HISTORY_CHARS: usize = 20_000;
 const HISTORY_ITEMS: usize = 120; // l'API en accepte 128 au plus
+/// Outil intégré : quitter la réunion quand on le lui demande à voix haute.
+pub const LEAVE_TOOL: &str = "quitter_reunion";
+/// Le temps de dire au revoir avant de partir.
+const LEAVE_DELAY: Duration = Duration::from_secs(8);
+
+fn leave_tool() -> Value {
+    json!({
+        "type": "function",
+        "name": LEAVE_TOOL,
+        "description": "Fait quitter la réunion au participant IA. Uniquement quand quelqu'un lui demande \
+explicitement, à lui, de partir (« tu peux nous laisser », « merci, tu peux quitter la réunion »), pas quand on \
+parle de la fin de la réunion en général.",
+        "parameters": {"type": "object", "properties": {}}
+    })
+}
 
 pub fn session_config(cfg: &Config, history: &[(String, String)], mcp_tools: &[Value]) -> Value {
     let mut session = json!({
@@ -49,6 +64,7 @@ pub fn session_config(cfg: &Config, history: &[(String, String)], mcp_tools: &[V
     session["delegation"] = if cfg.delegation == "responses" {
         // Les outils du backend sont fixés à l'ouverture de la session : tout est déclaré d'emblée.
         let mut tools: Vec<Value> = mcp_tools.to_vec();
+        tools.push(leave_tool());
         if !cfg.no_web_search {
             tools.push(json!({"type": "web_search"}));
         }
@@ -283,6 +299,18 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                                 let g = calls.entry(delegation.clone()).or_default();
                                 g.open.insert(call_id.clone());
                                 g.count += 1;
+                                if name == LEAVE_TOOL {
+                                    info!("👋 On lui demande de quitter la réunion : il part dans {} s", LEAVE_DELAY.as_secs());
+                                    let output = "C'est noté : dis au revoir en une phrase courte, tu quittes la réunion \
+juste après.".to_string();
+                                    let _ = internal_tx.send(Internal::ToolResult { delegation, call_id, output });
+                                    let cancel = cancel.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(LEAVE_DELAY).await;
+                                        cancel.cancel(); // fin propre de la session ; le service fait sortir le navigateur
+                                    });
+                                    continue;
+                                }
                                 let (hub, tx) = (hub.clone(), internal_tx.clone());
                                 // Pendant que l'outil travaille, la voix continue la conversation.
                                 tokio::spawn(async move {
@@ -391,8 +419,9 @@ mod tests {
         let mcp = vec![json!({"type": "function", "name": "agenda__list", "parameters": {"type": "object"}})];
         let s = session_config(&cfg, &[("user".into(), "Bonjour".into()), ("assistant".into(), "Salut".into())], &mcp);
         let tools = s["delegation"]["responses"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[1]["type"], "web_search");
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[1]["name"], LEAVE_TOOL);
+        assert_eq!(tools[2]["type"], "web_search");
         assert_eq!(s["model"], "gpt-live-1");
         assert_eq!(s["audio"]["format"]["rate"], 24000);
         assert_eq!(s["delegation"]["type"], "responses");

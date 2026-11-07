@@ -79,6 +79,8 @@
   .with-btn { display: flex; gap: 6px; }
   .with-btn input { flex: 1; min-width: 0; }
   button.ai { padding: 9px 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .label-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  button.ai.small { padding: 4px 10px; font-size: 13px; margin-bottom: 4px; }
   .aimsg { display: block; min-height: 1.2em; font-size: 12.5px; color: var(--muted); margin-top: 3px; }
   .aimsg.error { color: var(--err); }
   .linkbtn { border: 0; background: none; padding: 0; color: var(--muted); font-size: 13px; text-decoration: underline; }
@@ -125,10 +127,20 @@
         <small id="aiNameMsg" class="aimsg"></small>
       </div>
       <div><label for="voice">Voix</label>
-        <div class="with-btn"><input id="voice" type="text" list="voices" placeholder="marin">
+        <div class="with-btn"><select id="voice">
+            <option value="marin">marin — féminine, naturelle (recommandée)</option>
+            <option value="cedar">cedar — masculine, naturelle (recommandée)</option>
+            <option value="alloy">alloy — neutre</option>
+            <option value="ash">ash — masculine</option>
+            <option value="ballad">ballad — masculine, posée</option>
+            <option value="coral">coral — féminine, chaleureuse</option>
+            <option value="echo">echo — masculine</option>
+            <option value="sage">sage — féminine, calme</option>
+            <option value="shimmer">shimmer — féminine, claire</option>
+            <option value="verse">verse — masculine, expressive</option>
+          </select>
           <button id="playVoice" class="ai" type="button" title="Écouter cette voix" aria-label="Écouter cette voix">▶</button></div>
         <small id="voiceMsg" class="aimsg"></small>
-        <datalist id="voices"><option>marin</option><option>cedar</option><option>alloy</option><option>ash</option><option>ballad</option><option>coral</option><option>echo</option><option>sage</option><option>shimmer</option><option>verse</option></datalist>
       </div>
       <div><label for="language">Langue</label><input id="language" type="text" placeholder="français"></div>
     </div>
@@ -138,8 +150,12 @@
     <div class="seg" id="proactivity">
       <button data-v="reserve">Réservé</button><button data-v="normal">Normal</button><button data-v="active">Actif</button>
     </div>
-    <label for="behavior">Consignes de comportement <small>— ton, rôle, ce qu'il doit faire ou éviter</small></label>
+    <div class="label-row">
+      <label for="behavior">Consignes de comportement <small>— ton, rôle, ce qu'il doit faire ou éviter</small></label>
+      <button id="aiBehavior" class="ai small" type="button" title="Notez vos idées en vrac, l'IA en fait des consignes claires">Reformuler avec l'IA</button>
+    </div>
     <textarea id="behavior" placeholder="Tutoie tout le monde. Quand on te demande un résumé, termine par les décisions et les actions avec leur responsable. Ne parle jamais de prix sans qu'on te le demande."></textarea>
+    <small id="aiBehaviorMsg" class="aimsg"></small>
     <label for="context">Contexte des réunions <small>— équipe, projet, vocabulaire, participants habituels</small></label>
     <textarea id="context" placeholder="Équipe produit de 6 personnes (Alice, Paul, …). Projet « Atlas » : migration vers Rust."></textarea>
     <details id="promptDetails">
@@ -335,6 +351,8 @@ function renderMcpStatus() {
 }
 
 function fill(s) {
+  // Une voix enregistrée hors de la liste (nouvelle voix d'OpenAI) reste sélectionnable.
+  if (s.voice && ![...$("voice").options].some((o) => o.value === s.voice)) $("voice").add(new Option(s.voice, s.voice));
   for (const k of FIELDS) $(k).value = s[k] ?? "";
   setProactivity(s.proactivity || "normal");
   $("web_search").checked = !!s.web_search;
@@ -443,6 +461,20 @@ $("aiPrompt").onclick = () => busy($("aiPrompt"), async () => {
     say("aiPromptMsg", "Prompt rédigé ci-dessous : relisez-le, ajustez si besoin, puis enregistrez.");
   } catch (e) { say("aiPromptMsg", e.message, true); }
 });
+const behaviorUndo = [];
+$("aiBehavior").onclick = () => busy($("aiBehavior"), async () => {
+  if (!$("behavior").value.trim()) { say("aiBehaviorMsg", "Notez d'abord vos idées en vrac dans le champ, même mal écrites.", true); return; }
+  say("aiBehaviorMsg", "Reformulation…");
+  try {
+    const r = await api("/api/assist/behavior", { method: "POST", body: JSON.stringify(draft({ brief: $("behavior").value })) });
+    behaviorUndo.push($("behavior").value);
+    $("behavior").value = r.behavior;
+    $("aiBehaviorMsg").innerHTML = 'Reformulé : relisez puis enregistrez. <button type="button" class="linkbtn" id="undoBehavior">Annuler</button>';
+    $("aiBehaviorMsg").className = "aimsg";
+    $("undoBehavior").onclick = () => { $("behavior").value = behaviorUndo.pop() ?? $("behavior").value; say("aiBehaviorMsg", "Texte d'origine rétabli."); };
+  } catch (e) { say("aiBehaviorMsg", e.message, true); }
+});
+
 // Pas de confirm() bloquant : un second clic dans les 5 s confirme le remplacement.
 let replaceArmed = 0;
 function confirmReplace() {
@@ -454,7 +486,7 @@ function confirmReplace() {
 
 let voiceAudio = null;
 $("playVoice").onclick = () => busy($("playVoice"), async () => {
-  const v = ($("voice").value || $("voice").placeholder).trim();
+  const v = $("voice").value.trim();
   if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
   say("voiceMsg", `Chargement de « ${v} »… (la première écoute est générée, quelques secondes)`);
   try {

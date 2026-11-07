@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { launchBotBrowser } from "./browser.js";
 import { AI_MIC, MEETING_SINK, devicesPresent, routeBrowserStreams } from "./devices.js";
 import { platformOf } from "./platform.js";
-import { joinTeams, leaveTeams } from "./teams.js";
+import { joinTeams, leaveTeams, waitForEnd, waitInCall } from "./teams.js";
 
 const log = (m: string) => console.log(`${new Date().toLocaleTimeString("fr-FR")} [fdm-join] ${m}`);
 
@@ -38,7 +38,7 @@ if (platform !== "teams") {
 }
 
 const profileDir = resolve(values.profile!);
-const context = await launchBotBrowser({ profileDir, headless: values.headless!, executablePath: values.browser });
+const context = await launchBotBrowser({ profileDir, headless: values.headless!, executablePath: values.browser, displayName: values.name });
 const page = context.pages()[0] ?? (await context.newPage());
 const routing = setInterval(() => routeBrowserStreams(profileDir, log), 3000);
 
@@ -63,3 +63,9 @@ try {
   // On garde la fenêtre : on peut finir à la main (l'audio du bot est déjà branché).
   log(`⚠️  entrée automatique impossible (${(e as Error).message.split("\n")[0]}) — finissez dans la fenêtre du bot`);
 }
+
+// Une fois dans l'appel (automatiquement ou à la main), on surveille la fin de la réunion pour
+// ne pas laisser tourner la session gpt-live : le service voit le navigateur s'arrêter et la ferme.
+await waitInCall(page);
+await waitForEnd(page, log);
+await stop(0);

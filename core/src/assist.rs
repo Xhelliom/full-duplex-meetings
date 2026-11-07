@@ -181,6 +181,27 @@ prise de parole spontanée : {pro}\n- consignes de comportement : {beh}\n\nPromp
     Ok(strip_fence(&text))
 }
 
+/// Des idées notées en vrac -> des consignes de comportement claires, sans en ajouter.
+pub async fn rewrite_behavior(mut cfg: Config, d: &Draft) -> Result<String> {
+    d.apply(&mut cfg);
+    if d.brief.trim().is_empty() {
+        bail!("notez d'abord vos idées dans le champ");
+    }
+    let instructions = "Tu reformules les consignes de comportement qu'un organisateur donne à un participant IA \
+vocal de ses réunions en ligne. Ces consignes sont ajoutées à son prompt système. Reprends toutes les idées de \
+l'organisateur et seulement elles : n'en ajoute pas, n'en retire pas, ne change pas leur sens. Corrige la langue, \
+lève les ambiguïtés, et écris des phrases courtes à l'impératif, adressées au participant en le tutoyant, une idée \
+par phrase, sans liste à puces ni titre, sans majuscules d'insistance. Quand une consigne est vague, rends-la \
+concrète en restant fidèle à l'intention (par exemple « sois pas trop bavard » devient « Fais des réponses courtes, \
+sauf si on te demande de détailler. »). Écris en français. Réponds uniquement par les consignes.";
+    let input = format!(
+        "Rôle du participant : {}\n\nConsignes de l'organisateur, telles qu'il les a notées :\n{}",
+        or_none(&cfg.expertise),
+        d.brief.trim()
+    );
+    Ok(strip_fence(&respond(&cfg, instructions, &input).await?))
+}
+
 /// Enlève un éventuel bloc de code autour du texte.
 fn strip_fence(s: &str) -> String {
     let t = s.trim();

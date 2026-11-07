@@ -397,13 +397,15 @@ fn upstream(e: anyhow::Error) -> Response {
     (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("{e:#}")}))).into_response()
 }
 
-/// Aides IA : `name` propose un nom, `system_prompt` rédige un prompt système.
+/// Aides IA : `name` propose un nom, `system_prompt` rédige un prompt système, `behavior`
+/// reformule les consignes de comportement.
 async fn assist_route(State(app): State<Arc<App>>, Path(kind): Path<String>, Json(draft): Json<assist::Draft>) -> Response {
     let cfg = app.settings.read().await.apply(&app.base);
     let result = match kind.as_str() {
         "name" => assist::suggest_name(cfg, &draft).await.map(|name| json!({"name": name})),
         "system_prompt" => assist::write_system_prompt(cfg, &draft).await.map(|p| json!({"system_prompt": p})),
-        _ => return bad("aide inconnue : name ou system_prompt"),
+        "behavior" => assist::rewrite_behavior(cfg, &draft).await.map(|b| json!({"behavior": b})),
+        _ => return bad("aide inconnue : name, system_prompt ou behavior"),
     };
     match result {
         Ok(v) => Json(v).into_response(),

@@ -51,6 +51,11 @@ pub struct McpServer {
     pub description: String,
     /// Demander une confirmation orale avant d'exécuter ses outils (serveurs locaux uniquement)
     pub confirm: bool,
+    /// Chargement des outils : "auto" (tous d'office jusqu'à AUTO_LIMIT, à la demande au-delà),
+    /// "all" (tous d'office) ou "on_demand" (via trouver_outils / utiliser_outil)
+    pub load: String,
+    /// Outils toujours chargés d'office, même quand le serveur est « à la demande »
+    pub always: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +64,8 @@ pub struct ServerStatus {
     pub run_on: String,
     pub ok: bool,
     pub tools: Vec<String>,
+    /// Outils chargés à la demande (parmi `tools`)
+    pub on_demand: usize,
     pub error: Option<String>,
 }
 
@@ -71,6 +78,22 @@ struct Connected {
 /// Une confirmation demandée reste valable ce temps-là.
 const CONFIRM_TTL: Duration = Duration::from_secs(300);
 
+/// En mode "auto", un serveur qui expose plus d'outils que ça passe « à la demande ».
+pub const AUTO_LIMIT: usize = 15;
+pub const FIND_TOOLS: &str = "trouver_outils";
+pub const USE_TOOL: &str = "utiliser_outil";
+/// Au plus autant d'outils dans une réponse de trouver_outils.
+const FIND_MAX: usize = 12;
+
+/// Un outil chargé « à la demande » : connu de fdm, présenté au modèle seulement s'il le cherche.
+#[derive(Debug, Clone)]
+struct Deferred {
+    function: String,
+    server: String,
+    description: String,
+    parameters: Value,
+}
+
 /// Les serveurs MCP connectés et leurs outils, pour une session.
 #[derive(Default)]
 pub struct McpHub {
@@ -80,6 +103,9 @@ pub struct McpHub {
     functions: Vec<Value>,
     native: Vec<Value>,
     pub status: Vec<ServerStatus>,
+    deferred: Vec<Deferred>,
+    /// Serveurs à la demande : (nom, description, nombre d'outils)
+    deferred_servers: Vec<(String, String, usize)>,
     /// Appels en attente de confirmation : (fonction + arguments) -> moment de la demande
     pending: Mutex<HashMap<String, Instant>>,
     /// Dernière fois qu'un participant a parlé (transcription de la réunion)
@@ -147,6 +173,7 @@ impl McpHub {
                 run_on: "openai".into(),
                 ok: !s.url.is_empty(),
                 tools: vec![],
+                on_demand: 0,
                 error: s.url.is_empty().then(|| "URL manquante".into()),
             });
         }
@@ -175,6 +202,13 @@ impl McpHub {
                 Ok((service, tools)) => {
                     let idx = hub.servers.len();
                     let mut names = vec![];
+                    let count = tools.iter().filter(|t| allowed(s, &t.name)).count();
+                    let on_demand = match s.load.as_str() {
+                        "all" => false,
+                        "on_demand" => true,
+                        _ => count > AUTO_LIMIT,
+                    };
+                    let mut deferred = 0;
                     for tool in tools {
                         let t = serde_json::to_value(&tool).unwrap_or_default();
                         let tool_name = t["name"].as_str().unwrap_or_default().to_string();
@@ -193,17 +227,42 @@ impl McpHub {
                             Value::Object(o) if !o.is_empty() => t["inputSchema"].clone(),
                             _ => json!({"type": "object", "properties": {}}),
                         };
-                        hub.functions.push(json!({
-                            "type": "function",
-                            "name": fname,
-                            "description": description,
-                            "parameters": params,
-                        }));
+                        if on_demand && !s.always.iter().any(|a| a == &tool_name) {
+                            hub.deferred.push(Deferred {
+                                function: fname.clone(),
+                                server: s.name.clone(),
+                                description,
+                                parameters: params,
+                            });
+                            deferred += 1;
+                        } else {
+                            hub.functions.push(json!({
+                                "type": "function",
+                                "name": fname,
+                                "description": description,
+                                "parameters": params,
+                            }));
+                        }
                         hub.routes.insert(fname, (idx, tool_name.clone()));
                         names.push(tool_name);
                     }
-                    info!("🔌 MCP « {} » : {} outil(s)", s.name, names.len());
-                    hub.status.push(ServerStatus { name: s.name.clone(), run_on: "local".into(), ok: true, tools: names, error: None });
+                    if deferred > 0 {
+                        hub.deferred_servers.push((s.name.clone(), s.description.clone(), deferred));
+                    }
+                    info!(
+                        "🔌 MCP « {} » : {} outil(s){}",
+                        s.name,
+                        names.len(),
+                        if deferred > 0 { format!(", dont {deferred} à la demande") } else { String::new() }
+                    );
+                    hub.status.push(ServerStatus {
+                        name: s.name.clone(),
+                        run_on: "local".into(),
+                        ok: true,
+                        tools: names,
+                        on_demand: deferred,
+                        error: None,
+                    });
                     hub.servers.push(Connected { server: s.name.clone(), service, confirm: s.confirm });
                 }
                 Err(e) => {
@@ -213,6 +272,7 @@ impl McpHub {
                         run_on: "local".into(),
                         ok: false,
                         tools: vec![],
+                        on_demand: 0,
                         error: Some(format!("{e:#}")),
                     });
                 }
@@ -223,7 +283,117 @@ impl McpHub {
 
     /// Les outils à déclarer au backend : fonctions (serveurs locaux) + MCP natifs (OpenAI).
     pub fn tools(&self) -> Vec<Value> {
-        self.functions.iter().chain(self.native.iter()).cloned().collect()
+        let mut tools: Vec<Value> = self.functions.iter().chain(self.native.iter()).cloned().collect();
+        if !self.deferred.is_empty() {
+            let catalogue = self
+                .deferred_servers
+                .iter()
+                .map(|(name, desc, n)| {
+                    if desc.is_empty() { format!("« {name} » ({n} outils)") } else { format!("« {name} » : {desc} ({n} outils)") }
+                })
+                .collect::<Vec<_>>()
+                .join(" ; ");
+            tools.push(json!({
+                "type": "function",
+                "name": FIND_TOOLS,
+                "description": format!(
+                    "Cherche parmi les outils disponibles à la demande et renvoie leur nom, leur rôle et leurs \
+paramètres. Serveurs : {catalogue}. Ensuite, appelle l'outil choisi avec `{USE_TOOL}`."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "recherche": {"type": "string", "description": "mots décrivant ce que l'outil doit faire"},
+                        "serveur": {"type": "string", "description": "lister les outils de ce serveur"}
+                    }
+                }
+            }));
+            tools.push(json!({
+                "type": "function",
+                "name": USE_TOOL,
+                "description": format!("Exécute un outil trouvé avec `{FIND_TOOLS}`, avec des arguments conformes à ses paramètres."),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "nom": {"type": "string", "description": "nom exact de l'outil, tel que renvoyé par trouver_outils"},
+                        "arguments": {"type": "object", "description": "arguments de l'outil"}
+                    },
+                    "required": ["nom", "arguments"]
+                }
+            }));
+        }
+        tools
+    }
+
+    /// `trouver_outils` : les outils à la demande qui correspondent, avec leurs paramètres.
+    fn find_tools(&self, args: &Value) -> String {
+        let server = args["serveur"].as_str().unwrap_or("").trim().to_lowercase();
+        let words: Vec<String> = args["recherche"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .map(String::from)
+            .collect();
+        let mut scored: Vec<(usize, &Deferred)> = self
+            .deferred
+            .iter()
+            .filter(|d| server.is_empty() || d.server.to_lowercase() == server)
+            .map(|d| {
+                let hay = format!("{} {}", d.function, d.description).to_lowercase();
+                (words.iter().filter(|w| hay.contains(w.as_str())).count(), d)
+            })
+            .filter(|(score, _)| words.is_empty() || *score > 0)
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        if scored.is_empty() {
+            return format!(
+                "Aucun outil ne correspond. Serveurs disponibles : {}.",
+                self.deferred_servers.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        let total = scored.len();
+        let mut out = String::from("Outils trouvés (à appeler avec utiliser_outil) :\n");
+        for (_, d) in scored.into_iter().take(FIND_MAX) {
+            out.push_str(&format!("\n- {} : {}\n  paramètres : {}\n", d.function, d.description, d.parameters));
+        }
+        if total > FIND_MAX {
+            out.push_str(&format!("\n… et {} autres : précise la recherche.", total - FIND_MAX));
+        }
+        out
+    }
+
+    /// Exécute n'importe quel appel du backend : outil direct, trouver_outils ou utiliser_outil.
+    pub async fn dispatch(&self, function: &str, arguments: &str) -> String {
+        let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
+        match function {
+            FIND_TOOLS => {
+                info!("🔎 trouver_outils {}", arguments);
+                self.find_tools(&args)
+            }
+            USE_TOOL => {
+                let name = args["nom"].as_str().unwrap_or("");
+                let inner = if args["arguments"].is_object() { args["arguments"].clone() } else { json!({}) };
+                if let Some(missing) = self.missing_required(name, &inner) {
+                    return format!("RIEN N'A ÉTÉ FAIT : paramètre(s) obligatoire(s) manquant(s) pour {name} : {missing}.");
+                }
+                self.call(name, &inner.to_string()).await
+            }
+            _ => self.call(function, arguments).await,
+        }
+    }
+
+    /// Les paramètres obligatoires absents (l'API ne vérifie plus le schéma derrière utiliser_outil).
+    fn missing_required(&self, function: &str, args: &Value) -> Option<String> {
+        let d = self.deferred.iter().find(|d| d.function == function)?;
+        let missing: Vec<&str> = d.parameters["required"]
+            .as_array()?
+            .iter()
+            .filter_map(|r| r.as_str())
+            .filter(|r| args.get(*r).is_none())
+            .collect();
+        (!missing.is_empty()).then(|| missing.join(", "))
     }
 
     /// Exécute un appel d'outil du backend. Ne renvoie jamais d'erreur : un échec est un
@@ -380,6 +550,51 @@ mod tests {
         assert!(hub.needs_confirmation("tickets__create", &args)); // confirmation consommée
     }
 
+    fn hub_avec_outils_a_la_demande() -> McpHub {
+        let mut hub = McpHub::default();
+        for (f, d, req) in [
+            ("agenda__creer_evenement", "Crée un événement dans l'agenda", vec!["titre", "date"]),
+            ("agenda__lister", "Liste les événements de l'agenda", vec![]),
+            ("tickets__ouvrir", "Ouvre un ticket de support", vec!["titre"]),
+        ] {
+            hub.deferred.push(Deferred {
+                function: f.into(),
+                server: f.split("__").next().unwrap().into(),
+                description: d.into(),
+                parameters: json!({"type": "object", "properties": {}, "required": req}),
+            });
+        }
+        hub.deferred_servers = vec![("agenda".into(), "l'agenda".into(), 2), ("tickets".into(), String::new(), 1)];
+        hub
+    }
+
+    #[test]
+    fn outils_a_la_demande_exposes_via_trouver_et_utiliser() {
+        let hub = hub_avec_outils_a_la_demande();
+        let names: Vec<String> = hub.tools().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, [FIND_TOOLS, USE_TOOL]);
+        assert!(hub.tools()[0]["description"].as_str().unwrap().contains("« agenda » : l'agenda (2 outils)"));
+    }
+
+    #[tokio::test]
+    async fn trouver_outils_par_mots_et_par_serveur() {
+        let hub = hub_avec_outils_a_la_demande();
+        let r = hub.dispatch(FIND_TOOLS, r#"{"recherche": "créer un événement"}"#).await;
+        assert!(r.find("agenda__creer_evenement").unwrap() < r.find("agenda__lister").unwrap_or(usize::MAX));
+        assert!(!r.contains("tickets__ouvrir"));
+        let r = hub.dispatch(FIND_TOOLS, r#"{"serveur": "tickets"}"#).await;
+        assert!(r.contains("tickets__ouvrir") && !r.contains("agenda"));
+        let r = hub.dispatch(FIND_TOOLS, r#"{"recherche": "météo"}"#).await;
+        assert!(r.starts_with("Aucun outil") && r.contains("agenda, tickets"));
+    }
+
+    #[tokio::test]
+    async fn utiliser_outil_verifie_les_parametres_obligatoires() {
+        let hub = hub_avec_outils_a_la_demande();
+        let r = hub.dispatch(USE_TOOL, r#"{"nom": "agenda__creer_evenement", "arguments": {"titre": "Démo"}}"#).await;
+        assert!(r.contains("manquant") && r.contains("date"), "{r}");
+    }
+
     #[test]
     fn tronque_proprement() {
         let t = truncate(&"é".repeat(3000), 4001);
@@ -433,6 +648,30 @@ mod integration {
         hub.user_spoke(); // « oui, vas-y »
         let second = hub.call("meteo__prevision", r#"{"ville": "Lyon"}"#).await;
         assert!(second.contains("À Lyon : 18 °C"), "{second}");
+
+        // Même serveur, outils à la demande (sauf « secret », chargé d'office).
+        let mut parts = std::env::var("FDM_TEST_MCP").unwrap().split_whitespace().map(String::from).collect::<Vec<_>>().into_iter();
+        let server = McpServer {
+            name: "meteo".into(),
+            enabled: true,
+            run_on: "local".into(),
+            command: parts.next().unwrap(),
+            args: parts.collect(),
+            load: "on_demand".into(),
+            always: vec!["secret".into()],
+            description: "la météo".into(),
+            ..Default::default()
+        };
+        let hub = McpHub::connect_all(&[server]).await;
+        assert_eq!(hub.status[0].on_demand, 1);
+        let names: Vec<String> = hub.tools().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, ["meteo__secret", FIND_TOOLS, USE_TOOL]);
+        let found = hub.dispatch(FIND_TOOLS, r#"{"recherche": "prévision météo"}"#).await;
+        assert!(found.contains("meteo__prevision") && found.contains("ville"), "{found}");
+        let out = hub.dispatch(USE_TOOL, r#"{"nom": "meteo__prevision", "arguments": {"ville": "Brest"}}"#).await;
+        assert!(out.contains("À Brest : 18 °C"), "{out}");
+        let out = hub.dispatch(USE_TOOL, r#"{"nom": "meteo__prevision", "arguments": {}}"#).await;
+        assert!(out.contains("manquant") && out.contains("ville"), "{out}");
     }
 }
 

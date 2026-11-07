@@ -190,6 +190,15 @@
       <div><label>Description pour le modèle</label><input type="text" data-f="description" placeholder="l'agenda de l'équipe"></div>
       <div><label>Outils autorisés <small>— vide = tous, séparés par des virgules</small></label><input type="text" data-f="allowed_tools"></div>
     </div>
+    <div class="row" data-show="local">
+      <div><label>Chargement des outils</label>
+        <select data-f="load">
+          <option value="auto">Automatique (d'office jusqu'à 15 outils)</option>
+          <option value="all">Tous d'office</option>
+          <option value="on_demand">À la demande</option>
+        </select></div>
+      <div><label>Toujours d'office <small>— outils présentés directement, séparés par des virgules</small></label><input type="text" data-f="always"></div>
+    </div>
   </div>
 </template>
 
@@ -241,11 +250,13 @@ function addMcp(s = { enabled: true, run_on: "local" }) {
   f("description").value = s.description || "";
   f("allowed_tools").value = (s.allowed_tools || []).join(", ");
   f("confirm").checked = !!s.confirm;
+  f("load").value = ["all", "on_demand"].includes(s.load) ? s.load : "auto";
+  f("always").value = (s.always || []).join(", ");
   const show = () => {
     const m = f("mode").value;
     node.querySelector('[data-show="stdio"]').hidden = m !== "stdio";
     node.querySelector('[data-show="url"]').hidden = m === "stdio";
-    node.querySelector('[data-show="local"]').hidden = m === "openai"; // OpenAI appelle ces serveurs lui-même
+    for (const el of node.querySelectorAll('[data-show="local"]')) el.hidden = m === "openai"; // OpenAI appelle ces serveurs lui-même
   };
   f("mode").onchange = show; show();
   node.querySelector('[data-act="remove"]').onclick = () => node.remove();
@@ -268,6 +279,8 @@ function readMcp() {
       description: f("description").value.trim(),
       allowed_tools: f("allowed_tools").value.split(",").map((s) => s.trim()).filter(Boolean),
       confirm: mode !== "openai" && f("confirm").checked,
+      load: f("load").value,
+      always: f("always").value.split(",").map((s) => s.trim()).filter(Boolean),
     };
   });
 }
@@ -279,7 +292,7 @@ function renderMcpStatus() {
     const st = mcpStatus.find((s) => s.name === name);
     badge.className = "badge" + (st ? (st.ok ? " ok" : " err") : "");
     badge.textContent = !st ? "connecté au début de chaque réunion"
-      : st.ok ? (st.run_on === "openai" ? "transmis à OpenAI" : `connecté — ${st.tools.length} outil(s) : ${st.tools.slice(0, 8).join(", ")}${st.tools.length > 8 ? "…" : ""}`)
+      : st.ok ? (st.run_on === "openai" ? "transmis à OpenAI" : `connecté — ${st.tools.length} outil(s)${st.on_demand ? `, dont ${st.on_demand} à la demande` : ""} : ${st.tools.slice(0, 8).join(", ")}${st.tools.length > 8 ? "…" : ""}`)
       : `erreur : ${st.error}`;
   }
 }

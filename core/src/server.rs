@@ -342,6 +342,9 @@ async fn put_settings(State(app): State<Arc<App>>, Json(mut new): Json<Settings>
         if m.enabled && m.command.trim().is_empty() && m.url.trim().is_empty() {
             return bad(&format!("serveur MCP « {} » : il faut une commande ou une URL", m.name));
         }
+        if !["", "auto", "all", "on_demand"].contains(&m.load.as_str()) {
+            return bad(&format!("serveur MCP « {} » : chargement auto, all ou on_demand", m.name));
+        }
         if m.enabled && m.run_on == "openai" && !m.url.starts_with("https://") {
             return bad(&format!("serveur MCP « {} » : OpenAI ne peut appeler qu'une URL https publique", m.name));
         }

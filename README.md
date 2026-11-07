@@ -61,7 +61,18 @@ haute aux participants s'ils confirment. Le même appel n'est exécuté que si q
 modèle de juger que c'était un « oui ». Cette option vaut pour les serveurs locaux ; ceux de type « OpenAI » sont
 appelés par OpenAI lui-même.
 
-Chaque outil local devient une fonction `serveur__outil` (filtrable avec « outils autorisés »). Les appels
+Chaque outil local devient une fonction `serveur__outil` (filtrable avec « outils autorisés »).
+
+**Chargement à la demande** (comme loquivox) : un serveur qui expose des dizaines d'outils noierait le modèle.
+Pour chaque serveur local, choisissez son *chargement des outils* :
+- *Automatique* (par défaut) : tous d'office jusqu'à 15 outils, à la demande au-delà ;
+- *Tous d'office* ;
+- *À la demande*.
+
+Les outils « à la demande » passent par deux outils fixes : `trouver_outils(recherche | serveur)` renvoie les outils
+qui correspondent, avec leurs paramètres, et `utiliser_outil(nom, arguments)` les exécute (fdm vérifie lui-même les
+paramètres obligatoires). *Toujours d'office* garde quelques outils sous la main. La liste d'outils d'une session
+GPT-Live reste ainsi fixe du début à la fin, sans dépendre d'une mise à jour en cours de session. Les appels
 s'exécutent pendant que la voix continue la conversation, puis le résultat est rendu au modèle **comme des données,
 jamais comme des consignes**. Un serveur en panne n'empêche pas la réunion : il apparaît en erreur.
 
@@ -115,4 +126,3 @@ Vérifié aussi de bout en bout, avec un faux serveur `gpt-live-1` :
   - savoir qui parle : les sous-titres en direct de Teams affichent le nom de chaque orateur, à transmettre au
     modèle en pensée silencieuse ;
   - Google Meet (`join/src/platform.ts` le reconnaît déjà) ;
-  - chargement des outils à la demande (`find_tools`) pour les serveurs qui en exposent des dizaines.

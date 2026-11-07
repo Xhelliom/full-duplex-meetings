@@ -286,7 +286,7 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                                 let (hub, tx) = (hub.clone(), internal_tx.clone());
                                 // Pendant que l'outil travaille, la voix continue la conversation.
                                 tokio::spawn(async move {
-                                    let output = hub.call(&name, &args).await;
+                                    let output = hub.dispatch(&name, &args).await;
                                     let _ = tx.send(Internal::ToolResult { delegation, call_id, output });
                                 });
                             }

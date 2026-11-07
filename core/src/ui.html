@@ -79,6 +79,10 @@
   .with-btn { display: flex; gap: 6px; }
   .with-btn input { flex: 1; min-width: 0; }
   button.ai { padding: 9px 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .screen { width: 100%; aspect-ratio: 16 / 10; background: #000; border-radius: 8px; overflow: hidden; }
+  .screen:fullscreen { border-radius: 0; aspect-ratio: auto; }
+  .screen-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .label-row h2 { margin: 0; }
   .label-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
   button.ai.small { padding: 4px 10px; font-size: 13px; margin-bottom: 4px; }
   .aimsg { display: block; min-height: 1.2em; font-size: 12.5px; color: var(--muted); margin-top: 3px; }
@@ -118,6 +122,20 @@
   </section>
 
   <section>
+    <div class="label-row">
+      <h2>Écran du bot</h2>
+      <div class="screen-tools">
+        <label class="switch" title="Sinon, l'écran est en lecture seule"><input id="vncControl" type="checkbox"> Contrôler</label>
+        <button id="vncFull" type="button" hidden>Plein écran</button>
+        <button id="vncToggle" type="button">Afficher</button>
+      </div>
+    </div>
+    <p class="hint">Son navigateur, en direct : pour le voir entrer dans la réunion, l'admettre ou cliquer à sa place si Teams a changé. Cochez « Contrôler » pour utiliser la souris et le clavier.</p>
+    <div id="vncScreen" class="screen" hidden></div>
+    <small id="vncMsg" class="aimsg"></small>
+  </section>
+
+  <section>
     <h2>Identité et comportement</h2>
     <p class="hint">Ce que le bot sait de lui-même et comment il se comporte en réunion. Appliqué à la prochaine réunion.</p>
     <div class="row">
@@ -128,16 +146,38 @@
       </div>
       <div><label for="voice">Voix</label>
         <div class="with-btn"><select id="voice">
-            <option value="marin">marin — féminine, naturelle (recommandée)</option>
-            <option value="cedar">cedar — masculine, naturelle (recommandée)</option>
-            <option value="alloy">alloy — neutre</option>
-            <option value="ash">ash — masculine</option>
-            <option value="ballad">ballad — masculine, posée</option>
-            <option value="coral">coral — féminine, chaleureuse</option>
-            <option value="echo">echo — masculine</option>
-            <option value="sage">sage — féminine, calme</option>
-            <option value="shimmer">shimmer — féminine, claire</option>
-            <option value="verse">verse — masculine, expressive</option>
+            <option value="marin">marin — féminine (voix par défaut)</option>
+            <optgroup label="Français">
+              <option value="brise">brise — féminine</option>
+              <option value="sillage">sillage — masculine</option>
+            </optgroup>
+            <optgroup label="Anglais">
+              <option value="gleam">gleam — féminine, nord-américaine</option>
+              <option value="meridian">meridian — masculine, nord-américaine</option>
+              <option value="vesper">vesper — masculine, britannique</option>
+              <option value="willow">willow — féminine, irlandaise</option>
+              <option value="stone">stone — masculine, irlandaise</option>
+              <option value="quartz">quartz — féminine, australienne (générée)</option>
+              <option value="ripple">ripple — masculine, australienne</option>
+              <option value="delta">delta — féminine, sud des États-Unis (générée)</option>
+              <option value="cinder">cinder — masculine, sud des États-Unis (générée)</option>
+              <option value="beacon">beacon — masculine, philippine (générée)</option>
+            </optgroup>
+            <optgroup label="Portugais (Brésil)">
+              <option value="bossa">bossa — féminine</option>
+              <option value="tempo">tempo — masculine</option>
+            </optgroup>
+            <optgroup label="Allemand">
+              <option value="nuri">nuri — féminine</option>
+              <option value="juni">juni — féminine</option>
+              <option value="flitz">flitz — masculine</option>
+            </optgroup>
+            <optgroup label="Autres langues">
+              <option value="nira">nira — féminine, hindi</option>
+              <option value="harema">harema — féminine, japonaise</option>
+              <option value="shida">shida — masculine, japonaise</option>
+              <option value="noeul">noeul — féminine, coréenne</option>
+            </optgroup>
           </select>
           <button id="playVoice" class="ai" type="button" title="Écouter cette voix" aria-label="Écouter cette voix">▶</button></div>
         <small id="voiceMsg" class="aimsg"></small>
@@ -488,7 +528,7 @@ let voiceAudio = null;
 $("playVoice").onclick = () => busy($("playVoice"), async () => {
   const v = $("voice").value.trim();
   if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
-  say("voiceMsg", `Chargement de « ${v} »… (la première écoute est générée, quelques secondes)`);
+  say("voiceMsg", `Chargement de « ${v} »… (première écoute : gpt-live enregistre un extrait, une quinzaine de secondes)`);
   try {
     const res = await fetch(`/api/voice/${encodeURIComponent(v)}`, { headers: { "x-fdm-token": token } });
     if (res.status === 401) { showGate("Jeton refusé : il a peut-être changé."); return; }
@@ -496,9 +536,39 @@ $("playVoice").onclick = () => busy($("playVoice"), async () => {
     voiceAudio = new Audio(URL.createObjectURL(await res.blob()));
     voiceAudio.onended = () => say("voiceMsg", "");
     await voiceAudio.play();
-    say("voiceMsg", `Voix « ${v} » (extrait de synthèse, proche du rendu en réunion)`);
+    say("voiceMsg", `Voix « ${v} » (enregistrée avec gpt-live)`);
   } catch (e) { say("voiceMsg", e.message, true); }
 });
+
+// ------------------------------------------------------------------ écran du bot (noVNC)
+const NOVNC = "https://cdn.jsdelivr.net/gh/novnc/noVNC@v1.6.0/core/rfb.js";
+let rfb = null;
+function vncUi(on) {
+  $("vncScreen").hidden = !on;
+  $("vncFull").hidden = !on;
+  $("vncToggle").textContent = on ? "Masquer" : "Afficher";
+}
+async function vncConnect() {
+  say("vncMsg", "Connexion à l'écran du bot…");
+  let RFB;
+  try { RFB = (await import(NOVNC)).default; }
+  catch { say("vncMsg", "Impossible de charger le lecteur VNC (noVNC, depuis cdn.jsdelivr.net).", true); return; }
+  vncUi(true);
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  rfb = new RFB($("vncScreen"), `${proto}://${location.host}/api/vnc?token=${encodeURIComponent(token)}`);
+  rfb.scaleViewport = true;
+  rfb.viewOnly = !$("vncControl").checked;
+  rfb.addEventListener("connect", () => say("vncMsg", ""));
+  rfb.addEventListener("disconnect", (e) => {
+    rfb = null;
+    vncUi(false);
+    if (e.detail.clean) say("vncMsg", "");
+    else say("vncMsg", "Écran indisponible : VNC désactivé sur le bot (FDM_VNC=0), ou connexion perdue. Réessayez avec « Afficher ».", true);
+  });
+}
+$("vncToggle").onclick = () => { if (rfb) rfb.disconnect(); else vncConnect(); };
+$("vncControl").onchange = () => { if (rfb) { rfb.viewOnly = !$("vncControl").checked; if (!rfb.viewOnly) rfb.focus(); } };
+$("vncFull").onclick = () => $("vncScreen").requestFullscreen?.();
 
 // ------------------------------------------------------------------ accès (jeton)
 let started = false;

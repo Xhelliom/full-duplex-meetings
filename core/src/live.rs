@@ -207,6 +207,7 @@ async fn session(
     let playback = audio.playback.clone();
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<Internal>();
     let mut calls: HashMap<String, CallGroup> = HashMap::new();
+    let mut last_backlog_check = Instant::now();
 
     loop {
         let mut outgoing: Vec<Value> = vec![];
@@ -222,6 +223,15 @@ async fn session(
                 }
                 if let Some((role, text)) = transcript.flush_if_stale(Instant::now()) {
                     log_turn(cfg, &role, &text);
+                }
+                if last_backlog_check.elapsed() >= Duration::from_secs(5) {
+                    last_backlog_check = Instant::now();
+                    let ms = playback.backlog_ms();
+                    if ms > 1000 {
+                        warn!("⏳ sa voix a {ms} ms de retard (réseau lent vers OpenAI ?)");
+                    } else {
+                        debug!("voix en attente : {ms} ms");
+                    }
                 }
             }
 

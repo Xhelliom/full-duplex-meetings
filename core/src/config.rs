@@ -33,6 +33,10 @@ pub struct Config {
     #[arg(long, env = "FDM_UI_TOKEN", hide_env_values = true, default_value = "")]
     pub ui_token: String,
 
+    /// Serveur VNC de l'écran du bot, relayé dans l'interface web (onglet « Écran du bot »)
+    #[arg(long, env = "FDM_VNC_ADDR", default_value = "127.0.0.1:5900")]
+    pub vnc_addr: String,
+
     /// Dossier des réglages (settings.json)
     #[arg(long, env = "FDM_DATA_DIR", default_value = "~/.local/share/fdm")]
     pub data_dir: String,

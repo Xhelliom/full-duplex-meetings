@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 
-/// Synthèse vocale des extraits : mêmes noms de voix que gpt-live.
+/// Synthèse vocale de la question posée à gpt-live pour enregistrer un extrait de sa voix.
 const TTS_MODEL: &str = "gpt-4o-mini-tts";
 
 /// Ce que l'interface envoie : le brief et les champs du formulaire, enregistrés ou non.
@@ -216,52 +216,190 @@ pub fn valid_voice(v: &str) -> bool {
     !v.is_empty() && v.len() <= 32 && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn sample(language: &str) -> (&'static str, &'static str) {
+/// (code de langue, question posée, phrase qu'il doit dire).
+fn sample(language: &str) -> (&'static str, &'static str, &'static str) {
     if language.trim().to_lowercase().starts_with("fr") {
-        ("fr", "Bonjour à tous ! Je suis là pour suivre la réunion avec vous. Si vous avez une question, ou si vous \
-voulez que je vérifie quelque chose, n'hésitez pas à m'interpeller.")
+        ("fr", "Bonjour ! Tu peux te présenter en une phrase ?",
+         "Bonjour à tous ! Je suis là pour suivre la réunion avec vous. Si vous avez une question, ou si vous voulez \
+que je vérifie quelque chose, n'hésitez pas à m'interpeller.")
     } else {
-        ("en", "Hi everyone! I'm here to follow the meeting with you. If you have a question, or want me to check \
+        ("en", "Hi! Can you introduce yourself in one sentence?",
+         "Hi everyone! I'm here to follow the meeting with you. If you have a question, or want me to check \
 something, just ask.")
     }
 }
 
 fn voice_path(cfg: &Config, voice: &str, lang: &str) -> PathBuf {
-    cfg.data_dir().join("voices").join(format!("{voice}-{lang}.mp3"))
+    cfg.data_dir().join("voices").join(format!("{voice}-{lang}.wav"))
 }
 
-/// L'extrait d'une voix (mp3), généré au premier appel puis gardé avec les réglages.
+async fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let tmp = path.with_extension("tmp");
+    tokio::fs::write(&tmp, bytes).await?;
+    tokio::fs::rename(&tmp, path).await?;
+    Ok(())
+}
+
+/// L'extrait d'une voix (wav), enregistré au premier appel puis gardé avec les réglages.
+///
+/// Les voix de gpt-live n'existent que dans gpt-live : on lui fait vraiment dire une phrase. Une
+/// courte session entend une question (synthèse vocale, gardée elle aussi) et on enregistre sa réponse.
 pub async fn voice_sample(cfg: &Config, voice: &str) -> Result<Vec<u8>> {
     if !valid_voice(voice) {
         bail!("nom de voix invalide");
     }
-    let (lang, text) = sample(&cfg.language);
+    let (lang, question, line) = sample(&cfg.language);
     let path = voice_path(cfg, voice, lang);
     if let Ok(bytes) = tokio::fs::read(&path).await {
         return Ok(bytes);
     }
     need_key(cfg)?;
-    let res = client()?
-        .post(format!("{}/audio/speech", http_base(cfg)))
-        .bearer_auth(cfg.api_key.trim())
-        .json(&json!({
-            "model": TTS_MODEL, "voice": voice, "input": text, "response_format": "mp3",
-            "instructions": "Ton naturel et chaleureux d'un collègue qui prend la parole en réunion.",
-        }))
-        .send()
+    let question = question_audio(cfg, lang, question).await?;
+    let pcm = record_live(cfg, voice, line, &question).await?;
+    let wav = wav(&trim_silence(&pcm));
+    write_atomic(&path, &wav).await?;
+    Ok(wav)
+}
+
+/// La question posée à gpt-live, en PCM 24 kHz (format de sortie `pcm` de l'API audio/speech).
+async fn question_audio(cfg: &Config, lang: &str, text: &str) -> Result<Vec<i16>> {
+    let path = cfg.data_dir().join("voices").join(format!("_question-{lang}.pcm"));
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => {
+            let res = client()?
+                .post(format!("{}/audio/speech", http_base(cfg)))
+                .bearer_auth(cfg.api_key.trim())
+                .json(&json!({"model": TTS_MODEL, "voice": "alloy", "input": text, "response_format": "pcm"}))
+                .send()
+                .await
+                .context("API OpenAI injoignable")?;
+            if !res.status().is_success() {
+                return Err(openai_error(res).await);
+            }
+            let b = res.bytes().await?.to_vec();
+            write_atomic(&path, &b).await?;
+            b
+        }
+    };
+    Ok(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
+}
+
+/// Une session gpt-live d'une dizaine de secondes : on lui joue la question, on enregistre sa voix.
+async fn record_live(base: &Config, voice: &str, line: &str, question: &[i16]) -> Result<Vec<i16>> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::time::{timeout, Instant};
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+
+    let mut cfg = base.clone();
+    cfg.voice = voice.to_string();
+    cfg.delegation = "client".into();
+    cfg.context.clear();
+    cfg.system_prompt = format!(
+        "Tu fais écouter ta voix. Quand on te demande de te présenter, réponds exactement par cette phrase, sans \
+rien ajouter ni changer, d'un ton naturel et chaleureux, puis tais-toi : « {line} »"
+    );
+    let url = format!("{}/live/sessions", cfg.api_base.trim_end_matches('/'));
+    let mut req = url.as_str().into_client_request()?;
+    req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.api_key.trim()).parse()?);
+    let (ws, _) = timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(req))
         .await
-        .context("API OpenAI injoignable")?;
-    if !res.status().is_success() {
-        return Err(openai_error(res).await);
+        .context("gpt-live ne répond pas")?
+        .context("connexion à gpt-live")?;
+    let (mut tx, mut rx) = ws.split();
+    let start = json!({"type": "session.start", "session": crate::live::session_config(&cfg, &[], &[])});
+    tx.send(Message::text(start.to_string())).await?;
+
+    // Ce qu'on lui fait entendre : un temps de silence, la question, puis du silence (flux continu).
+    let block = (crate::audio::SAMPLE_RATE as u64 * crate::audio::UPLINK_MS / 1000) as usize;
+    let lead = vec![0i16; crate::audio::SAMPLE_RATE as usize / 2];
+    let mut input = lead.into_iter().chain(question.iter().copied());
+    let mut ticker = tokio::time::interval(Duration::from_millis(crate::audio::UPLINK_MS));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut started = false;
+    let mut out: Vec<i16> = Vec::new();
+    let mut last_voice: Option<Instant> = None;
+
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if Instant::now() > deadline {
+                    break;
+                }
+                // Il a fini sa phrase : 1,5 s sans rien d'audible après avoir parlé.
+                if last_voice.is_some_and(|t| t.elapsed() > Duration::from_millis(1500)) {
+                    break;
+                }
+                if started {
+                    let chunk: Vec<i16> = (0..block).map(|_| input.next().unwrap_or(0)).collect();
+                    let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    tx.send(Message::text(json!({"type": "session.input_audio.append", "audio": B64.encode(bytes)}).to_string())).await?;
+                }
+            }
+            msg = rx.next() => {
+                let Some(msg) = msg else { bail!("gpt-live a fermé la connexion") };
+                let Message::Text(text) = msg? else { continue };
+                let ev: Value = serde_json::from_str(&text)?;
+                match ev["type"].as_str().unwrap_or("") {
+                    "session.started" => started = true,
+                    "session.output_audio.delta" => {
+                        let bytes = B64.decode(ev["delta"].as_str().unwrap_or(""))?;
+                        let samples: Vec<i16> = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+                        if crate::audio::is_audible(&samples) {
+                            last_voice = Some(Instant::now());
+                        }
+                        if last_voice.is_some() {
+                            out.extend(samples);
+                        }
+                    }
+                    "error" => bail!("gpt-live : {}", ev["error"]["message"].as_str().unwrap_or(&ev["error"].to_string())),
+                    "session.closed" => break,
+                    _ => {}
+                }
+            }
+        }
     }
-    let bytes = res.bytes().await?.to_vec();
-    if let Some(dir) = path.parent() {
-        tokio::fs::create_dir_all(dir).await?;
+    let _ = tx.send(Message::text(json!({"type": "session.close"}).to_string())).await;
+    let _ = tx.close().await;
+    if out.is_empty() {
+        bail!("gpt-live n'a rien dit avec la voix « {voice} » (voix inconnue ?)");
     }
-    let tmp = path.with_extension("mp3.tmp");
-    tokio::fs::write(&tmp, &bytes).await?;
-    tokio::fs::rename(&tmp, &path).await?;
-    Ok(bytes)
+    Ok(out)
+}
+
+/// Garde 100 ms de silence avant et après la voix.
+fn trim_silence(pcm: &[i16]) -> Vec<i16> {
+    let margin = crate::audio::SAMPLE_RATE as usize / 10;
+    let first = pcm.iter().position(|s| s.unsigned_abs() > 64).unwrap_or(0);
+    let last = pcm.iter().rposition(|s| s.unsigned_abs() > 64).unwrap_or(pcm.len().saturating_sub(1));
+    pcm[first.saturating_sub(margin)..(last + 1 + margin).min(pcm.len())].to_vec()
+}
+
+/// PCM 16 bits mono 24 kHz -> fichier WAV.
+fn wav(pcm: &[i16]) -> Vec<u8> {
+    let rate = crate::audio::SAMPLE_RATE;
+    let data_len = (pcm.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes()); // taille du bloc fmt
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes()); // octets par seconde
+    out.extend_from_slice(&2u16.to_le_bytes()); // octets par trame
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    for s in pcm {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -290,5 +428,19 @@ mod tests {
         assert_eq!((cfg.name.as_str(), cfg.expertise.as_str(), cfg.language.as_str()), ("Iris", "juriste", "français"));
         assert_eq!(sample("Français").0, "fr");
         assert_eq!(sample("english").0, "en");
+    }
+
+    #[test]
+    fn extrait_wav_sans_blancs_superflus() {
+        let mut pcm = vec![0i16; 24_000];
+        pcm.extend([1000i16; 2400]);
+        pcm.extend(vec![0i16; 24_000]);
+        let trimmed = trim_silence(&pcm);
+        assert_eq!(trimmed.len(), 2400 + 2 * 2400);
+        let w = wav(&trimmed);
+        assert_eq!(&w[..4], b"RIFF");
+        assert_eq!(&w[8..16], b"WAVEfmt ");
+        assert_eq!(w.len(), 44 + trimmed.len() * 2);
+        assert_eq!(u32::from_le_bytes(w[24..28].try_into().unwrap()), 24_000);
     }
 }

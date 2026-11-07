@@ -24,6 +24,9 @@ pub const MEETING_SINK: &str = "fdm_meeting";
 pub const AI_MIC: &str = "fdm_ai_mic";
 const STRIDE: usize = 2; // S16 mono
 
+/// Marge tolérée au-dessus de la réserve anti-gigue avant de jeter du silence (150 ms).
+const CATCH_UP_SLACK: usize = SAMPLE_RATE as usize * 150 / 1000;
+
 /// File d'attente de la voix de l'IA, lue par le callback PipeWire.
 #[derive(Default)]
 pub struct Playback {
@@ -41,8 +44,21 @@ impl Playback {
         pb.prime_samples.store(ms * SAMPLE_RATE as u64 / 1000, Ordering::Relaxed);
         pb
     }
+    /// gpt-live envoie un flux continu (silence compris) : le moindre à-coup réseau, ou un écart
+    /// d'horloge avec PipeWire, s'ajouterait pour toujours au retard. Au-delà de la réserve voulue,
+    /// on jette donc les trames de silence pour revenir au direct, sans rien couper d'audible.
     pub fn push(&self, samples: &[i16]) {
-        self.queue.lock().unwrap().extend(samples);
+        let mut q = self.queue.lock().unwrap();
+        let target = self.prime_samples.load(Ordering::Relaxed) as usize + CATCH_UP_SLACK;
+        if q.len() > target && !is_audible(samples) {
+            return;
+        }
+        q.extend(samples);
+    }
+
+    /// Ce qui attend d'être joué, en millisecondes.
+    pub fn backlog_ms(&self) -> u64 {
+        self.queue.lock().unwrap().len() as u64 * 1000 / SAMPLE_RATE as u64
     }
     fn fill(&self, out: &mut [u8]) {
         let mut q = self.queue.lock().unwrap();
@@ -287,5 +303,16 @@ mod tests {
         pb.push(&[5; 2400]); // 200 ms : on joue
         pb.fill(&mut out);
         assert_eq!(&out[..2], &5i16.to_le_bytes());
+    }
+
+    #[test]
+    fn rattrape_le_retard_en_jetant_du_silence() {
+        let pb = Playback::with_prebuffer_ms(200);
+        for _ in 0..20 {
+            pb.push(&[0; 2400]); // 2 s de silence d'un coup (à-coup réseau)
+        }
+        assert!(pb.backlog_ms() <= 450, "{} ms", pb.backlog_ms());
+        pb.push(&[3000; 2400]); // la voix, elle, n'est jamais jetée
+        assert!(pb.backlog_ms() >= 400);
     }
 }

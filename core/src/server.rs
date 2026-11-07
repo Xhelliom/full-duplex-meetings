@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
@@ -14,9 +15,10 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::stream::{self, Stream, StreamExt};
+use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -79,6 +81,7 @@ pub async fn serve(base: Config, audio: Audio, logs: LogHub) -> Result<()> {
         .route("/api/logs", get(logs_sse))
         .route("/api/assist/{kind}", post(assist_route))
         .route("/api/voice/{voice}", get(voice_route))
+        .route("/api/vnc", get(vnc_ws))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth));
     let router = Router::new().route("/", get(|| async { Html(UI) })).merge(api).with_state(app.clone());
 
@@ -423,11 +426,58 @@ async fn voice_route(State(app): State<Arc<App>>, Path(voice): Path<String>) -> 
     }
     let cfg = app.settings.read().await.apply(&app.base);
     match assist::voice_sample(&cfg, &voice).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response(),
+        Ok(bytes) => ([(header::CONTENT_TYPE, "audio/wav"), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response(),
         Err(e) => {
             warn!("Extrait de la voix {voice} : {e:#}");
             upstream(e)
         }
+    }
+}
+
+/// L'écran du bot dans l'interface : relais WebSocket <-> serveur VNC (noVNC côté page).
+async fn vnc_ws(State(app): State<Arc<App>>, ws: WebSocketUpgrade) -> Response {
+    let tcp = match tokio::net::TcpStream::connect(&app.base.vnc_addr).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("Écran du bot indisponible ({} : {e})", app.base.vnc_addr);
+            let msg = "écran du bot indisponible : VNC désactivé (FDM_VNC=0) ou pas encore démarré";
+            return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": msg}))).into_response();
+        }
+    };
+    ws.protocols(["binary"]).on_upgrade(move |socket| async move {
+        if let Err(e) = vnc_bridge(socket, tcp).await {
+            tracing::debug!("relais VNC terminé : {e:#}");
+        }
+    })
+}
+
+async fn vnc_bridge(socket: WebSocket, tcp: tokio::net::TcpStream) -> Result<()> {
+    let (mut tcp_rx, mut tcp_tx) = tcp.into_split();
+    let (mut ws_tx, mut ws_rx) = socket.split();
+    let up = async {
+        while let Some(msg) = ws_rx.next().await {
+            match msg? {
+                WsMessage::Binary(b) => tcp_tx.write_all(&b).await?,
+                WsMessage::Close(_) => break,
+                _ => {}
+            }
+        }
+        anyhow::Ok(())
+    };
+    let down = async {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = tcp_rx.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            ws_tx.send(WsMessage::Binary(buf[..n].to_vec().into())).await?;
+        }
+        anyhow::Ok(())
+    };
+    tokio::select! {
+        r = up => r,
+        r = down => r,
     }
 }
 

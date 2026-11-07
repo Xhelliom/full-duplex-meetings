@@ -5,7 +5,7 @@ import type { Locator, Page } from "playwright";
 
 const CONTINUE_IN_BROWSER = /continue on this browser|continuer sur ce navigateur|join on the web|rejoindre sur le web/i;
 const JOIN_NOW = /^\s*(join now|rejoindre maintenant|join|rejoindre)\s*$/i;
-const LEAVE = /^(leave|quitter)/i;
+const LEAVE = /^(leave|quitter|raccrocher|hang ?up|end call)/i;
 const NAME_FIELD = /name|nom/i;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -249,5 +249,13 @@ export async function leaveTeams(page: Page, log: (m: string) => void): Promise<
       /* rien à faire de plus */
     }
   }
-  log("pas de bouton pour raccrocher ni annuler (déjà sorti de l'appel ?)");
+  // Dernier recours : le raccourci clavier de Teams pour raccrocher. Et les boutons présents dans
+  // la page, pour corriger la recherche si Teams a renommé le sien.
+  const labels = await page
+    .locator("button")
+    .evaluateAll((els) => els.map((e) => (e.getAttribute("aria-label") || e.textContent || "").trim()).filter(Boolean).slice(0, 30))
+    .catch(() => [] as string[]);
+  await page.keyboard.press("Control+Shift+H").catch(() => {});
+  await sleep(1_500);
+  log(`pas de bouton pour raccrocher ni annuler : raccourci Ctrl+Maj+H envoyé. Boutons de la page : ${labels.join(" | ") || "aucun"}`);
 }

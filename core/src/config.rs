@@ -103,8 +103,8 @@ pub struct Config {
 }
 
 /// Ajouté au prompt voix quand il peut partir de lui-même (outil quitter_reunion du backend).
-const LEAVE_HINT: &str = " Si on te demande explicitement de quitter la réunion, délègue-le aussi : tu as le moyen \
-de partir. Dis au revoir en une phrase.";
+const LEAVE_HINT: &str = " Quand on te demande de quitter la réunion, délègue-le dès la première demande : c'est \
+le seul moyen de partir, dire « je m'en vais » ne suffit pas. Puis dis au revoir en une phrase.";
 
 impl Config {
     fn leave_hint(&self) -> &'static str {
@@ -120,8 +120,8 @@ impl Config {
     pub fn instructions(&self) -> String {
         if !self.system_prompt.trim().is_empty() {
             let mut s = self.system_prompt.replace("{name}", &self.name).replace("{language}", &self.language);
-            // Un prompt écrit à la main ne connaît pas forcément ce moyen de partir.
-            if !self.leave_hint().is_empty() && !s.contains("quitter la réunion") {
+            // Un prompt écrit à la main (ou rédigé par l'IA) ne connaît pas forcément ce moyen de partir.
+            if !self.leave_hint().is_empty() && !s.contains(self.leave_hint().trim()) {
                 s.push_str("\n\n# Quitter la réunion\n");
                 s.push_str(self.leave_hint().trim());
             }

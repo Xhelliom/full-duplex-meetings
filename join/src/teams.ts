@@ -212,5 +212,17 @@ export async function leaveTeams(page: Page, log: (m: string) => void): Promise<
       /* bouton suivant */
     }
   }
-  log("pas de bouton pour raccrocher (déjà sorti de l'appel ?)");
+  // Encore dans la salle d'attente : on annule la demande, sinon l'organisateur la voit toujours.
+  const cancel = page.getByRole("button", { name: /^\s*(annuler|cancel)\s*$/i, includeHidden: true }).first();
+  if ((await cancel.count().catch(() => 0)) > 0) {
+    try {
+      await cancel.click({ force: true, timeout: 3_000 });
+      await sleep(1_500);
+      log("demande d'entrée annulée (il était en salle d'attente)");
+      return;
+    } catch {
+      /* rien à faire de plus */
+    }
+  }
+  log("pas de bouton pour raccrocher ni annuler (déjà sorti de l'appel ?)");
 }

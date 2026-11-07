@@ -242,6 +242,7 @@ async fn session(
                         playback.push(&samples);
                     }
                     "session.input_transcript.delta" => {
+                        hub.user_spoke();
                         if let Some((role, text)) = transcript.push("user", ev["delta"].as_str().unwrap_or(""), now) {
                             log_turn(cfg, &role, &text);
                         }

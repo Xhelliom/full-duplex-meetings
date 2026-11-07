@@ -55,6 +55,12 @@ Quand gpt-live délègue une réflexion, le modèle de réflexion (`gpt-5.6-luna
     (`Authorization: Bearer …`).
   - *OpenAI — URL publique* : le serveur est passé tel quel à OpenAI, qui l'appelle directement.
 
+Par défaut, le bot utilise les outils **directement**. Pour un serveur qui agit (créer un ticket, envoyer un
+message…), cochez **« Demander une confirmation orale »** : le premier appel ne fait rien et le bot demande à voix
+haute aux participants s'ils confirment. Le même appel n'est exécuté que si quelqu'un a parlé depuis, et c'est au
+modèle de juger que c'était un « oui ». Cette option vaut pour les serveurs locaux ; ceux de type « OpenAI » sont
+appelés par OpenAI lui-même.
+
 Chaque outil local devient une fonction `serveur__outil` (filtrable avec « outils autorisés »). Les appels
 s'exécutent pendant que la voix continue la conversation, puis le résultat est rendu au modèle **comme des données,
 jamais comme des consignes**. Un serveur en panne n'empêche pas la réunion : il apparaît en erreur.
@@ -109,5 +115,4 @@ Vérifié aussi de bout en bout, avec un faux serveur `gpt-live-1` :
   - savoir qui parle : les sous-titres en direct de Teams affichent le nom de chaque orateur, à transmettre au
     modèle en pensée silencieuse ;
   - Google Meet (`join/src/platform.ts` le reconnaît déjà) ;
-  - confirmation orale avant qu'un outil MCP n'**agisse** (envoyer, modifier), comme dans loquivox ;
   - chargement des outils à la demande (`find_tools`) pour les serveurs qui en exposent des dizaines.

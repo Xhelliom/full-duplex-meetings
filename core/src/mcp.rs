@@ -13,8 +13,8 @@
 //! Ce qu'un outil renvoie est présenté au modèle comme des DONNÉES, jamais comme des consignes.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use rmcp::service::{RoleClient, RunningService};
@@ -49,6 +49,8 @@ pub struct McpServer {
     pub allowed_tools: Vec<String>,
     /// Courte description pour le modèle (« l'agenda de l'équipe », « la base de tickets »)
     pub description: String,
+    /// Demander une confirmation orale avant d'exécuter ses outils (serveurs locaux uniquement)
+    pub confirm: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,7 +65,11 @@ pub struct ServerStatus {
 struct Connected {
     server: String,
     service: RunningService<RoleClient, ()>,
+    confirm: bool,
 }
+
+/// Une confirmation demandée reste valable ce temps-là.
+const CONFIRM_TTL: Duration = Duration::from_secs(300);
 
 /// Les serveurs MCP connectés et leurs outils, pour une session.
 #[derive(Default)]
@@ -74,6 +80,10 @@ pub struct McpHub {
     functions: Vec<Value>,
     native: Vec<Value>,
     pub status: Vec<ServerStatus>,
+    /// Appels en attente de confirmation : (fonction + arguments) -> moment de la demande
+    pending: Mutex<HashMap<String, Instant>>,
+    /// Dernière fois qu'un participant a parlé (transcription de la réunion)
+    last_speech: Mutex<Option<Instant>>,
 }
 
 /// `serveur__outil`, réduit à ce que l'API accepte ([a-zA-Z0-9_-], 64 caractères).
@@ -176,6 +186,9 @@ impl McpHub {
                         if !s.description.is_empty() {
                             description = format!("[{}] {description}", s.description);
                         }
+                        if s.confirm {
+                            description.push_str(" (Exige une confirmation orale des participants avant d'agir.)");
+                        }
                         let params = match &t["inputSchema"] {
                             Value::Object(o) if !o.is_empty() => t["inputSchema"].clone(),
                             _ => json!({"type": "object", "properties": {}}),
@@ -191,7 +204,7 @@ impl McpHub {
                     }
                     info!("🔌 MCP « {} » : {} outil(s)", s.name, names.len());
                     hub.status.push(ServerStatus { name: s.name.clone(), run_on: "local".into(), ok: true, tools: names, error: None });
-                    hub.servers.push(Connected { server: s.name.clone(), service });
+                    hub.servers.push(Connected { server: s.name.clone(), service, confirm: s.confirm });
                 }
                 Err(e) => {
                     warn!("🔌 MCP « {} » indisponible : {e:#}", s.name);
@@ -215,12 +228,48 @@ impl McpHub {
 
     /// Exécute un appel d'outil du backend. Ne renvoie jamais d'erreur : un échec est un
     /// résultat (le backend attend une réponse pour chaque appel).
+    /// Un participant vient de parler (sert à valider une confirmation demandée avant).
+    pub fn user_spoke(&self) {
+        *self.last_speech.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// Serveur « avec confirmation » : le premier appel ne fait rien et demande de faire confirmer
+    /// à voix haute ; le même appel (mêmes arguments) n'est exécuté que si quelqu'un a parlé depuis.
+    /// C'est au modèle de juger que c'était bien un « oui ».
+    fn needs_confirmation(&self, function: &str, args: &Value) -> bool {
+        let key = format!("{function} {args}");
+        let now = Instant::now();
+        let spoke = *self.last_speech.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap();
+        pending.retain(|_, at| now.duration_since(*at) < CONFIRM_TTL);
+        match pending.get(&key) {
+            Some(asked) if spoke.is_some_and(|t| t > *asked) => {
+                pending.remove(&key);
+                false
+            }
+            _ => {
+                pending.insert(key, now);
+                true
+            }
+        }
+    }
+
     pub async fn call(&self, function: &str, arguments: &str) -> String {
         let Some((idx, tool)) = self.routes.get(function) else {
             return format!("RIEN N'A ÉTÉ FAIT : l'outil {function} n'existe pas.");
         };
         let server = &self.servers[*idx];
         let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| json!({}));
+        if server.confirm && self.needs_confirmation(function, &args) {
+            info!("✋ {}.{} attend une confirmation orale", server.server, tool);
+            return format!(
+                "RIEN N'A ÉTÉ FAIT POUR L'INSTANT : l'outil {tool} (serveur MCP {}) exige une confirmation. Fais \
+demander à voix haute aux participants s'ils confirment, en disant précisément ce qui va être fait \
+(arguments : {args}). Rappelle ensuite cet outil avec exactement les mêmes arguments, et seulement si \
+quelqu'un a clairement dit oui. Sinon, n'insiste pas.",
+                server.server
+            );
+        }
         let params = json!({"name": tool, "arguments": if args.is_object() { args } else { json!({}) }});
         let result = match serde_json::from_value(params) {
             Ok(p) => tokio::time::timeout(CALL_TIMEOUT, server.service.call_tool(p)).await,
@@ -320,6 +369,18 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_exige_une_parole_apres_la_demande() {
+        let hub = McpHub::default();
+        let args = json!({"titre": "bug"});
+        assert!(hub.needs_confirmation("tickets__create", &args)); // 1er appel : on demande
+        assert!(hub.needs_confirmation("tickets__create", &args)); // personne n'a parlé : toujours pas
+        hub.user_spoke();
+        assert!(hub.needs_confirmation("tickets__create", &json!({"titre": "autre"}))); // autres arguments
+        assert!(!hub.needs_confirmation("tickets__create", &args)); // « oui » après la demande : exécuté
+        assert!(hub.needs_confirmation("tickets__create", &args)); // confirmation consommée
+    }
+
+    #[test]
     fn tronque_proprement() {
         let t = truncate(&"é".repeat(3000), 4001);
         assert!(t.ends_with("[tronqué]"));
@@ -353,6 +414,25 @@ mod integration {
         let out = hub.call("meteo__prevision", r#"{"ville": "Lyon"}"#).await;
         assert!(out.contains("À Lyon : 18 °C"), "{out}");
         assert!(out.contains("DONNÉES"));
+
+        // Même serveur, avec confirmation orale.
+        let mut parts = std::env::var("FDM_TEST_MCP").unwrap().split_whitespace().map(String::from).collect::<Vec<_>>().into_iter();
+        let server = McpServer {
+            name: "meteo".into(),
+            enabled: true,
+            run_on: "local".into(),
+            command: parts.next().unwrap(),
+            args: parts.collect(),
+            confirm: true,
+            ..Default::default()
+        };
+        let hub = McpHub::connect_all(&[server]).await;
+        assert!(hub.tools()[0]["description"].as_str().unwrap().contains("confirmation orale"));
+        let first = hub.call("meteo__prevision", r#"{"ville": "Lyon"}"#).await;
+        assert!(first.starts_with("RIEN N'A ÉTÉ FAIT POUR L'INSTANT"), "{first}");
+        hub.user_spoke(); // « oui, vas-y »
+        let second = hub.call("meteo__prevision", r#"{"ville": "Lyon"}"#).await;
+        assert!(second.contains("À Lyon : 18 °C"), "{second}");
     }
 }
 

@@ -19,6 +19,7 @@
     }
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; max-width: 980px; margin: 0 auto; }
   header h1 { font-size: 20px; margin: 0; flex: 1; }
@@ -58,6 +59,7 @@
   .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .mcp-head input[type=text] { flex: 1 1 180px; width: auto; min-width: 0; }
   .mcp-head select { flex: 0 1 220px; width: auto; }
+  .mcp > .switch { display: flex; margin: 8px 0 2px; }
   .badge { font-size: 12px; color: var(--muted); }
   .badge.ok { color: var(--ok); } .badge.err { color: var(--err); }
   .switch { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; font-size: 14px; }
@@ -169,6 +171,7 @@
       </select>
       <button type="button" class="danger" data-act="remove">Supprimer</button>
     </div>
+    <label class="switch" data-show="local"><input type="checkbox" data-f="confirm"> Demander une confirmation orale avant d'utiliser ses outils</label>
     <span class="badge" data-f="state"></span>
     <div data-show="stdio">
       <label>Commande <small>— un argument par ligne après la commande</small></label>
@@ -237,10 +240,12 @@ function addMcp(s = { enabled: true, run_on: "local" }) {
   f("headers").value = fromMap(s.headers, ": ");
   f("description").value = s.description || "";
   f("allowed_tools").value = (s.allowed_tools || []).join(", ");
+  f("confirm").checked = !!s.confirm;
   const show = () => {
     const m = f("mode").value;
     node.querySelector('[data-show="stdio"]').hidden = m !== "stdio";
     node.querySelector('[data-show="url"]').hidden = m === "stdio";
+    node.querySelector('[data-show="local"]').hidden = m === "openai"; // OpenAI appelle ces serveurs lui-même
   };
   f("mode").onchange = show; show();
   node.querySelector('[data-act="remove"]').onclick = () => node.remove();
@@ -262,6 +267,7 @@ function readMcp() {
       headers: mode === "stdio" ? {} : toMap(f("headers").value, ":"),
       description: f("description").value.trim(),
       allowed_tools: f("allowed_tools").value.split(",").map((s) => s.trim()).filter(Boolean),
+      confirm: mode !== "openai" && f("confirm").checked,
     };
   });
 }

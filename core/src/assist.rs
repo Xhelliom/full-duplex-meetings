@@ -155,6 +155,7 @@ pub async fn write_system_prompt(mut cfg: Config, d: &Draft) -> Result<String> {
     let mut reference = cfg.clone();
     reference.system_prompt.clear();
     reference.context.clear();
+    reference.behavior.clear();
     reference.name = "{name}".into();
     reference.language = "{language}".into();
     let reference = reference.instructions();
@@ -163,15 +164,15 @@ pub async fn write_system_prompt(mut cfg: Config, d: &Draft) -> Result<String> {
 participe à des réunions en ligne. Pars du prompt de référence : garde ses sections et ce qui fait qu'il se comporte \
 bien en réunion (quand parler et se taire, pas d'acquiescements, s'arrêter quand on lui coupe la parole, déléguer \
 les recherches et les calculs), et adapte le rôle, le ton, les moments où il intervient et la façon de parler à ce \
-que veut l'organisateur. Intègre ses consignes. Style du guide de prompting GPT-Live : des sections courtes avec \
+que veut l'organisateur. Style du guide de prompting GPT-Live : des sections courtes avec \
 des titres « # … », des phrases simples et concrètes, des exemples brefs entre guillemets quand c'est utile, pas \
 de listes à rallonge ni de majuscules d'insistance. C'est un prompt pour l'oral. Écris le prompt en français, et \
-garde tels quels les marqueurs {name} et {language} (ils sont remplacés par le nom et la langue). N'y mets pas le \
-contexte de la réunion : il est ajouté automatiquement. Réponds uniquement par le prompt, sans bloc de code ni \
+garde tels quels les marqueurs {name} et {language} (ils sont remplacés par le nom et la langue). N'y recopie ni les \
+consignes de comportement ni le contexte de la réunion : ils sont ajoutés automatiquement à la fin du prompt. Réponds uniquement par le prompt, sans bloc de code ni \
 commentaire.";
     let input = format!(
         "Ce que veut l'organisateur, en quelques mots :\n{brief}\n\nRéglages actuels\n- rôle et domaines : {exp}\n- \
-prise de parole spontanée : {pro}\n- consignes de comportement : {beh}\n\nPrompt de référence :\n{reference}",
+prise de parole spontanée : {pro}\n- consignes de comportement (ajoutées à la fin, ne pas recopier) : {beh}\n\nPrompt de référence :\n{reference}",
         brief = d.brief.trim(),
         exp = or_none(&cfg.expertise),
         pro = cfg.proactivity,

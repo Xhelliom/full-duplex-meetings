@@ -161,8 +161,11 @@ mod tests {
         let mut cfg = Config::parse_from(["fdm"]);
         cfg.system_prompt = "Tu es {name}. Parle {language}.".into();
         cfg.context = "Revue de sprint".into();
+        cfg.behavior = "Tutoie tout le monde.".into();
         let p = cfg.instructions();
         assert!(p.starts_with("Tu es Nova. Parle français."));
         assert!(p.contains("Revue de sprint"));
+        // les consignes restent ajoutées, avant le contexte
+        assert!(p.find("Tutoie tout le monde.").unwrap() < p.find("Revue de sprint").unwrap());
     }
 }

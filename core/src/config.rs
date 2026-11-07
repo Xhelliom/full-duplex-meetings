@@ -126,6 +126,12 @@ impl Config {
                 s.push_str("\n\n# Quitter la réunion\n");
                 s.push_str(self.leave_hint().trim());
             }
+            // Les consignes restent un réglage à part, ajouté à la fin : les modifier plus tard
+            // s'applique aussi à un prompt complet.
+            if !self.behavior.trim().is_empty() {
+                s.push_str("\n\n# Consignes de comportement\n");
+                s.push_str(self.behavior.trim());
+            }
             if !self.context.is_empty() {
                 s.push_str("\n\n# Contexte de la réunion\n");
                 s.push_str(&self.context);

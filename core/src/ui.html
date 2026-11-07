@@ -206,9 +206,9 @@
         <button id="aiPrompt" class="ai" type="button">Rédiger</button>
       </div>
       <small id="aiPromptMsg" class="aimsg"></small>
-      <p class="hint">S'il est rempli, il remplace entièrement le prompt généré à partir des champs ci-dessus (les consignes et le contexte restent ajoutés à la fin). <code>{name}</code> et <code>{language}</code> sont remplacés.</p>
+      <p class="hint">Par défaut, le bot construit son prompt à partir des champs ci-dessus. S'il est rempli, ce prompt complet remplace cette construction ; les consignes de comportement et le contexte restent ajoutés à la fin. <code>{name}</code> et <code>{language}</code> sont remplacés. « Rédiger avec l'IA » en écrit un nouveau à partir de vos quelques mots : ce n'est donc jamais le même texte que le prompt construit.</p>
       <textarea id="system_prompt" class="tall" placeholder="Laisser vide pour utiliser le prompt généré."></textarea>
-      <p><button id="showPrompt" type="button">Voir le prompt effectif</button></p>
+      <p><button id="showPrompt" type="button" title="Ce qui sera réellement envoyé, d'après le formulaire à l'écran (même non enregistré)">Voir le prompt effectif</button></p>
       <pre id="promptView" class="prompt" hidden></pre>
     </details>
   </section>
@@ -403,12 +403,16 @@ function fill(s) {
   (s.mcp_servers || []).forEach(addMcp);
 }
 
-async function save() {
+function formBody() {
   const body = { proactivity, web_search: $("web_search").checked, api_key: $("api_key").value, mcp_servers: readMcp() };
   for (const k of FIELDS) body[k] = $(k).value;
+  return body;
+}
+
+async function save() {
   $("saveBtn").disabled = true;
   try {
-    fill(await api("/api/settings", { method: "PUT", body: JSON.stringify(body) }));
+    fill(await api("/api/settings", { method: "PUT", body: JSON.stringify(formBody()) }));
     $("saveMsg").className = "ok";
     $("saveMsg").textContent = currentState === "in_meeting" ? "Enregistré. Appliqué à la prochaine réunion (quittez puis rejoignez pour l'appliquer maintenant)." : "Enregistré.";
     if (!$("promptView").hidden) showPrompt();
@@ -418,10 +422,14 @@ async function save() {
 $("saveBtn").onclick = save;
 $("addMcp").onclick = () => addMcp();
 
+// Le prompt réellement envoyé, d'après le formulaire tel qu'il est à l'écran (même non enregistré).
 async function showPrompt() {
-  const p = await api("/api/prompt");
-  $("promptView").hidden = false;
-  $("promptView").textContent = p.instructions + "\n\n——— prompt du modèle de réflexion ———\n\n" + p.backend_instructions;
+  try {
+    const p = await api("/api/prompt", { method: "POST", body: JSON.stringify(formBody()) });
+    $("promptView").hidden = false;
+    $("promptView").textContent = "——— envoyé à gpt-live (la voix) ———\n\n" + p.instructions +
+      "\n\n——— envoyé au modèle de réflexion (quand il délègue) ———\n\n" + p.backend_instructions;
+  } catch (e) { $("promptView").hidden = false; $("promptView").textContent = e.message; }
 }
 $("showPrompt").onclick = showPrompt;
 
@@ -499,6 +507,7 @@ $("aiPrompt").onclick = () => busy($("aiPrompt"), async () => {
     const r = await api("/api/assist/system_prompt", { method: "POST", body: JSON.stringify(draft({ brief: $("brief").value })) });
     $("system_prompt").value = r.system_prompt;
     say("aiPromptMsg", "Prompt rédigé ci-dessous : relisez-le, ajustez si besoin, puis enregistrez.");
+    if (!$("promptView").hidden) showPrompt();
   } catch (e) { say("aiPromptMsg", e.message, true); }
 });
 const behaviorUndo = [];

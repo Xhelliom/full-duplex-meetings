@@ -74,7 +74,7 @@ pub async fn serve(base: Config, audio: Audio, logs: LogHub) -> Result<()> {
 
     let api = Router::new()
         .route("/api/settings", get(get_settings).put(put_settings))
-        .route("/api/prompt", get(get_prompt))
+        .route("/api/prompt", get(get_prompt).post(preview_prompt))
         .route("/api/status", get(get_status))
         .route("/api/join", post(join))
         .route("/api/leave", post(leave))
@@ -370,6 +370,12 @@ async fn put_settings(State(app): State<Arc<App>>, Json(mut new): Json<Settings>
 
 async fn get_prompt(State(app): State<Arc<App>>) -> Json<Value> {
     let cfg = app.settings.read().await.apply(&app.base);
+    Json(json!({"instructions": cfg.instructions(), "backend_instructions": cfg.backend_instructions()}))
+}
+
+/// Le prompt effectif d'après le formulaire tel qu'il est à l'écran, même pas encore enregistré.
+async fn preview_prompt(State(app): State<Arc<App>>, Json(form): Json<Settings>) -> Json<Value> {
+    let cfg = form.apply(&app.base);
     Json(json!({"instructions": cfg.instructions(), "backend_instructions": cfg.backend_instructions()}))
 }
 

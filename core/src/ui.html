@@ -71,13 +71,37 @@
   .savebar div { max-width: 980px; margin: 0 auto; display: flex; gap: 12px; align-items: center; justify-content: flex-end; }
   #saveMsg { flex: 1; font-size: 14px; color: var(--muted); }
   #saveMsg.error { color: var(--err); } #saveMsg.ok { color: var(--ok); }
+  .gate { position: fixed; inset: 0; z-index: 10; background: var(--bg); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .gate form { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; width: 100%; max-width: 420px; }
+  .gate h2 { margin: 0 0 6px; font-size: 18px; }
+  .gate .actions { display: flex; justify-content: flex-end; margin-top: 14px; }
+  .gate .err { color: var(--err); font-size: 14px; min-height: 1.5em; margin: 8px 0 0; }
+  .with-btn { display: flex; gap: 6px; }
+  .with-btn input { flex: 1; min-width: 0; }
+  button.ai { padding: 9px 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .aimsg { display: block; min-height: 1.2em; font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .aimsg.error { color: var(--err); }
+  .linkbtn { border: 0; background: none; padding: 0; color: var(--muted); font-size: 13px; text-decoration: underline; }
 </style>
 </head>
 <body>
 <header>
   <h1 id="title">Participant IA</h1>
   <span id="pill" class="pill idle">en attente</span>
+  <button id="forgetToken" class="linkbtn" type="button" hidden>Changer de jeton</button>
 </header>
+
+<div id="gate" class="gate" hidden>
+  <form id="gateForm" autocomplete="off">
+    <h2>Accès protégé</h2>
+    <p class="hint">Cette interface demande un jeton d'accès. C'est la valeur de <code>FDM_UI_TOKEN</code> dans le fichier
+      <code>.env</code> de la machine du bot. Il sera gardé dans ce navigateur.</p>
+    <label for="gateToken">Jeton</label>
+    <input id="gateToken" type="password" autocomplete="current-password" required>
+    <p id="gateErr" class="err" role="alert"></p>
+    <div class="actions"><button class="primary" type="submit">Entrer</button></div>
+  </form>
+</div>
 <main>
 
   <section>
@@ -95,9 +119,15 @@
     <h2>Identité et comportement</h2>
     <p class="hint">Ce que le bot sait de lui-même et comment il se comporte en réunion. Appliqué à la prochaine réunion.</p>
     <div class="row">
-      <div><label for="name">Nom affiché</label><input id="name" type="text" placeholder="Nova"></div>
+      <div><label for="name">Nom affiché</label>
+        <div class="with-btn"><input id="name" type="text" placeholder="Nova">
+          <button id="aiName" class="ai" type="button" title="Proposer un nom (d'après le rôle ci-dessous)">IA</button></div>
+        <small id="aiNameMsg" class="aimsg"></small>
+      </div>
       <div><label for="voice">Voix</label>
-        <input id="voice" type="text" list="voices" placeholder="marin">
+        <div class="with-btn"><input id="voice" type="text" list="voices" placeholder="marin">
+          <button id="playVoice" class="ai" type="button" title="Écouter cette voix" aria-label="Écouter cette voix">▶</button></div>
+        <small id="voiceMsg" class="aimsg"></small>
         <datalist id="voices"><option>marin</option><option>cedar</option><option>alloy</option><option>ash</option><option>ballad</option><option>coral</option><option>echo</option><option>sage</option><option>shimmer</option><option>verse</option></datalist>
       </div>
       <div><label for="language">Langue</label><input id="language" type="text" placeholder="français"></div>
@@ -112,8 +142,14 @@
     <textarea id="behavior" placeholder="Tutoie tout le monde. Quand on te demande un résumé, termine par les décisions et les actions avec leur responsable. Ne parle jamais de prix sans qu'on te le demande."></textarea>
     <label for="context">Contexte des réunions <small>— équipe, projet, vocabulaire, participants habituels</small></label>
     <textarea id="context" placeholder="Équipe produit de 6 personnes (Alice, Paul, …). Projet « Atlas » : migration vers Rust."></textarea>
-    <details>
+    <details id="promptDetails">
       <summary>Prompt système complet (avancé)</summary>
+      <label for="brief">Rédiger avec l'IA <small>— décrivez en quelques mots ce que vous voulez, l'IA écrit le prompt complet ci-dessous</small></label>
+      <div class="with-btn">
+        <input id="brief" type="text" placeholder="animateur de rétro agile, factuel, relance ceux qui ne parlent pas, tutoie">
+        <button id="aiPrompt" class="ai" type="button">Rédiger</button>
+      </div>
+      <small id="aiPromptMsg" class="aimsg"></small>
       <p class="hint">S'il est rempli, il remplace entièrement le prompt généré à partir des champs ci-dessus (les consignes et le contexte restent ajoutés à la fin). <code>{name}</code> et <code>{language}</code> sont remplacés.</p>
       <textarea id="system_prompt" class="tall" placeholder="Laisser vide pour utiliser le prompt généré."></textarea>
       <p><button id="showPrompt" type="button">Voir le prompt effectif</button></p>
@@ -211,6 +247,7 @@ const $ = (id) => document.getElementById(id);
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", "x-fdm-token": token, ...(opts.headers || {}) } });
   const body = await res.json().catch(() => ({}));
+  if (res.status === 401) { showGate(token ? "Jeton refusé : il a peut-être changé." : ""); throw new Error("jeton requis"); }
   if (!res.ok) throw new Error(body.error || res.statusText);
   return body;
 }
@@ -375,9 +412,96 @@ function openLog() {
   es.onerror = () => { es.close(); setTimeout(openLog, 3000); };
 }
 
-api("/api/settings").then(fill).catch((e) => { $("saveMsg").className = "error"; $("saveMsg").textContent = e.message; });
-refreshStatus(); setInterval(refreshStatus, 2000);
-openLog();
+// ------------------------------------------------------------------ aides IA
+function draft(extra = {}) {
+  return { name: $("name").value, language: $("language").value, expertise: $("expertise").value,
+           proactivity, behavior: $("behavior").value, ...extra };
+}
+function say(id, text, error = false) { $(id).textContent = text; $(id).className = "aimsg" + (error ? " error" : ""); }
+async function busy(btn, fn) {
+  const label = btn.textContent; btn.disabled = true; btn.textContent = "…";
+  try { await fn(); } finally { btn.disabled = false; btn.textContent = label; }
+}
+
+const proposedNames = [];
+$("aiName").onclick = () => busy($("aiName"), async () => {
+  say("aiNameMsg", "Recherche d'un nom…");
+  try {
+    const r = await api("/api/assist/name", { method: "POST", body: JSON.stringify(draft({ avoid: proposedNames })) });
+    proposedNames.push(r.name);
+    $("name").value = r.name;
+    say("aiNameMsg", "Proposé par l'IA : recliquez pour un autre. Pensez à enregistrer.");
+  } catch (e) { say("aiNameMsg", e.message, true); }
+});
+
+$("aiPrompt").onclick = () => busy($("aiPrompt"), async () => {
+  if ($("system_prompt").value.trim() && !confirmReplace()) return;
+  say("aiPromptMsg", "Rédaction en cours (quelques secondes)…");
+  try {
+    const r = await api("/api/assist/system_prompt", { method: "POST", body: JSON.stringify(draft({ brief: $("brief").value })) });
+    $("system_prompt").value = r.system_prompt;
+    say("aiPromptMsg", "Prompt rédigé ci-dessous : relisez-le, ajustez si besoin, puis enregistrez.");
+  } catch (e) { say("aiPromptMsg", e.message, true); }
+});
+// Pas de confirm() bloquant : un second clic dans les 5 s confirme le remplacement.
+let replaceArmed = 0;
+function confirmReplace() {
+  if (Date.now() - replaceArmed < 5000) { replaceArmed = 0; return true; }
+  replaceArmed = Date.now();
+  say("aiPromptMsg", "Un prompt est déjà rempli : recliquez sur « Rédiger » pour le remplacer.");
+  return false;
+}
+
+let voiceAudio = null;
+$("playVoice").onclick = () => busy($("playVoice"), async () => {
+  const v = ($("voice").value || $("voice").placeholder).trim();
+  if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
+  say("voiceMsg", `Chargement de « ${v} »… (la première écoute est générée, quelques secondes)`);
+  try {
+    const res = await fetch(`/api/voice/${encodeURIComponent(v)}`, { headers: { "x-fdm-token": token } });
+    if (res.status === 401) { showGate("Jeton refusé : il a peut-être changé."); return; }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    voiceAudio = new Audio(URL.createObjectURL(await res.blob()));
+    voiceAudio.onended = () => say("voiceMsg", "");
+    await voiceAudio.play();
+    say("voiceMsg", `Voix « ${v} » (extrait de synthèse, proche du rendu en réunion)`);
+  } catch (e) { say("voiceMsg", e.message, true); }
+});
+
+// ------------------------------------------------------------------ accès (jeton)
+let started = false;
+function showGate(msg = "") {
+  $("gate").hidden = false;
+  $("gateErr").textContent = msg;
+  $("gateToken").value = "";
+  $("gateToken").focus();
+}
+$("gateForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const candidate = $("gateToken").value.trim();
+  const res = await fetch("/api/status", { headers: { "x-fdm-token": candidate } }).catch(() => null);
+  if (!res) { $("gateErr").textContent = "Le bot ne répond pas."; return; }
+  if (res.status === 401) { $("gateErr").textContent = "Jeton incorrect."; $("gateToken").select(); return; }
+  token = candidate;
+  try { localStorage.setItem("fdm_token", token); } catch {}
+  $("gate").hidden = true;
+  $("forgetToken").hidden = false;
+  if (started) location.reload(); else start();
+};
+$("forgetToken").onclick = () => { try { localStorage.removeItem("fdm_token"); } catch {} token = ""; showGate(); };
+
+function start() {
+  started = true;
+  api("/api/settings").then(fill).catch((e) => { $("saveMsg").className = "error"; $("saveMsg").textContent = e.message; });
+  refreshStatus(); setInterval(refreshStatus, 2000);
+  openLog();
+}
+
+// Vérifie l'accès avant de charger quoi que ce soit : sans jeton valide, on demande le jeton.
+fetch("/api/status", { headers: { "x-fdm-token": token } }).then((res) => {
+  if (res.status === 401) showGate(token ? "Jeton refusé : il a peut-être changé." : "");
+  else { if (token) $("forgetToken").hidden = false; start(); }
+}).catch(() => start());
 </script>
 </body>
 </html>

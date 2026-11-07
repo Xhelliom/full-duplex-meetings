@@ -1,3 +1,4 @@
+mod assist;
 mod audio;
 mod config;
 mod live;

@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use axum::extract::{Query, Request, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -28,7 +28,7 @@ use crate::config::Config;
 use crate::logs::LogHub;
 use crate::mcp::{McpHub, ServerStatus};
 use crate::settings::Settings;
-use crate::{live, shutdown};
+use crate::{assist, live, shutdown};
 
 const UI: &str = include_str!("ui.html");
 
@@ -77,6 +77,8 @@ pub async fn serve(base: Config, audio: Audio, logs: LogHub) -> Result<()> {
         .route("/api/join", post(join))
         .route("/api/leave", post(leave))
         .route("/api/logs", get(logs_sse))
+        .route("/api/assist/{kind}", post(assist_route))
+        .route("/api/voice/{voice}", get(voice_route))
         .route_layer(middleware::from_fn_with_state(app.clone(), auth));
     let router = Router::new().route("/", get(|| async { Html(UI) })).merge(api).with_state(app.clone());
 
@@ -389,6 +391,42 @@ async fn join(State(app): State<Arc<App>>, Json(body): Json<JoinBody>) -> Respon
 async fn leave(State(app): State<Arc<App>>) -> Response {
     let _ = app.ctl.send(Command::Leave).await;
     (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
+}
+
+fn upstream(e: anyhow::Error) -> Response {
+    (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("{e:#}")}))).into_response()
+}
+
+/// Aides IA : `name` propose un nom, `system_prompt` rédige un prompt système.
+async fn assist_route(State(app): State<Arc<App>>, Path(kind): Path<String>, Json(draft): Json<assist::Draft>) -> Response {
+    let cfg = app.settings.read().await.apply(&app.base);
+    let result = match kind.as_str() {
+        "name" => assist::suggest_name(cfg, &draft).await.map(|name| json!({"name": name})),
+        "system_prompt" => assist::write_system_prompt(cfg, &draft).await.map(|p| json!({"system_prompt": p})),
+        _ => return bad("aide inconnue : name ou system_prompt"),
+    };
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => {
+            warn!("Aide IA ({kind}) : {e:#}");
+            upstream(e)
+        }
+    }
+}
+
+/// Extrait audio d'une voix, pour l'écouter avant de la choisir.
+async fn voice_route(State(app): State<Arc<App>>, Path(voice): Path<String>) -> Response {
+    if !assist::valid_voice(&voice) {
+        return bad("nom de voix invalide");
+    }
+    let cfg = app.settings.read().await.apply(&app.base);
+    match assist::voice_sample(&cfg, &voice).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "audio/mpeg"), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response(),
+        Err(e) => {
+            warn!("Extrait de la voix {voice} : {e:#}");
+            upstream(e)
+        }
+    }
 }
 
 async fn logs_sse(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {

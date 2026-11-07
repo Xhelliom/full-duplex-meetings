@@ -551,6 +551,7 @@ dependencies = [
  "futures-util",
  "http",
  "pipewire",
+ "reqwest",
  "rmcp",
  "serde",
  "serde_json",

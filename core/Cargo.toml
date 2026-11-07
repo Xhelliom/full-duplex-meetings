@@ -1,0 +1,23 @@
+[package]
+name = "fdm-core"
+version = "0.2.0"
+edition = "2021"
+description = "Agent vocal IA full duplex (OpenAI Realtime) pour réunions, audio natif PipeWire"
+
+[[bin]]
+name = "fdm"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+futures-util = "0.3"
+pipewire = { version = "0.8", features = ["v0_3_49"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"

@@ -18,7 +18,9 @@ import re
 import subprocess
 from pathlib import Path
 
-from .config import AI_MIC_SOURCE, MEETING_SINK
+# Noms des nœuds PipeWire créés par le binaire Rust `fdm` (qui doit tourner AVANT).
+MEETING_SINK = "fdm_meeting"
+AI_MIC_SOURCE = "fdm_ai_mic"
 
 log = logging.getLogger(__name__)
 

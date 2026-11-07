@@ -1,93 +1,90 @@
 # full-duplex-meetings
 
-Un **agent vocal IA** (API OpenAI Realtime, `gpt-realtime`) qui **rejoint une réunion Microsoft Teams comme un
-participant à part entière** : il entend tout le monde, suit la conversation, et prend la parole quand on
-l'interpelle. Full duplex : il écoute en permanence, même pendant qu'il parle, et se tait si on lui coupe la parole.
+Un **collègue IA dans vos réunions Microsoft Teams**. Il rejoint la réunion comme un participant à part entière,
+entend tout le monde, et prend la parole **quand on l'appelle par son prénom, son surnom ou son nom**, comme on
+interpelle un humain. Ensuite il reste dans l'échange : les questions suivantes n'ont pas besoin de son nom, il
+parle aussi peu ou aussi longtemps qu'il le juge utile, et on lui coupe la parole si besoin.
 
-Cible : **Linux (Arch) + PipeWire** (via `pipewire-pulse`), Wayland ou X11.
+Linux (Arch) + PipeWire. Cœur en **Rust** (audio natif PipeWire + OpenAI), entrée dans Teams en **Python** (Playwright).
 
-## Comment ça marche
+## Architecture
 
 ```
-               ┌──────────── navigateur Chromium dédié au bot (Playwright) ────────────┐
-               │  Teams web, connecté comme invité « Assistant IA »                     │
-               │    haut-parleurs ─► fdm_meeting (sink virtuel)                         │
-               │    micro         ◄─ fdm_ai_mic  (source virtuelle)                     │
-               └────────────────────────────────────────────────────────────────────────┘
- fdm_meeting.monitor ─► parec ─► [fdm] ─► WebSocket OpenAI Realtime ─► [fdm] ─► pacat ─► fdm_ai_voice ─► fdm_ai_mic
+┌─ fdm (Rust) ───────────────────────────────────────────────┐     ┌─ fdm-join (Python, facultatif) ─────┐
+│ crée 2 nœuds PipeWire (disparaissent à l'arrêt) :          │     │ Chromium dédié au bot, branché sur  │
+│   fdm_meeting  = haut-parleur du bot (il ENTEND la réunion)│◄────│ fdm_meeting / fdm_ai_mic, rejoint   │
+│   fdm_ai_mic   = micro du bot (il PARLE dans la réunion)   │────►│ la réunion comme invité « Nova »    │
+│ flux continu ⇄ OpenAI : gpt-live-1 (défaut) ou gpt-realtime│     └─────────────────────────────────────┘
+│ savoir-vivre : quand parler, quand se taire, interruptions │
+└────────────────────────────────────────────────────────────┘
 ```
 
-- Les périphériques virtuels sont créés au démarrage et supprimés à l'arrêt (`pactl load-module …`).
-- Le navigateur du bot est lancé avec `PULSE_SINK`/`PULSE_SOURCE` ; un filet de sécurité redéplace ses flux
-  audio toutes les 3 s si besoin. **Votre propre Teams et votre son ne sont pas touchés** : vous pouvez être dans la
-  même réunion depuis votre client habituel.
-- Teams n'envoie jamais à un participant sa propre voix → pas d'écho de l'IA sur elle-même.
+Les deux moitiés ne se parlent pas : leur seul lien, ce sont les périphériques PipeWire. Votre propre Teams et
+votre son ne sont pas touchés : vous pouvez être dans la même réunion avec votre client habituel.
 
-### Plusieurs personnes en face
-L'IA reçoit un seul flux mixé. Pour qu'elle se comporte bien en réunion :
-- **Mode `name` (défaut)** : toute la réunion est envoyée au modèle (il garde le contexte), mais il **ne répond que
-  quand on l'appelle** par son nom ou un alias (« Nova, tu peux résumer ? »), détecté sur la transcription. Ensuite il
-  reste « en conversation » `FDM_FOLLOWUP_SECONDS` secondes (on peut enchaîner sans répéter son nom).
-- **Mode `always`** : répond à chaque tour de parole (tête-à-tête).
-- Les instructions système lui expliquent qu'il y a plusieurs interlocuteurs, de les distinguer par la voix et les
-  prénoms, de s'adresser aux gens par leur prénom, et de rester bref (oral).
-- Interruption (*barge-in*) : dès que quelqu'un parle, la voix de l'IA est coupée instantanément et le modèle est
-  informé de ce qui a réellement été entendu (`conversation.item.truncate`).
+### Deux moteurs
+
+| | **Live** (`gpt-live-1`, défaut) | **Realtime** (`gpt-realtime`) |
+|---|---|---|
+| Duplex | Vraiment full duplex : écoute et parle en même temps, gère seul le rythme et les interruptions | Tour par tour (détection de fin de phrase) ; écoute pendant qu'il parle et se laisse couper |
+| Quand parler | Une **porte** sur sa voix : fermée tant qu'on ne l'appelle pas, ouverte dès que son nom est entendu | On ne déclenche une réponse que s'il est appelé, puis à chaque phrase de l'échange ; il peut choisir de se taire (outil) |
+| Réflexion | Délègue à un modèle OpenAI (recherche web incluse) | Le même modèle |
+| Interruption | Gérée par le modèle | Coupure si quelqu'un parle par-dessus plus de 400 ms (les « hm » sont ignorés) |
+
+**Fin de l'échange**, comme entre humains : on le congédie (« merci Nova », « c'est bon Nova »), ou les autres
+continuent un bon moment entre eux sans s'adresser à lui (`FDM_DISENGAGE_SECONDS`, 90 s). Aucune limite de durée
+sur ce qu'il dit.
 
 ## Installation (Arch)
 
 ```bash
-sudo pacman -S --needed pipewire pipewire-pulse libpulse python
+sudo pacman -S --needed rust clang pipewire pipewire-pulse wireplumber libpulse python
 git clone <ce dépôt> && cd full-duplex-meetings
+
+cargo install --path core                 # installe le binaire `fdm` dans ~/.cargo/bin
+
 python -m venv .venv && source .venv/bin/activate
-pip install -e .
-python -m playwright install chromium     # ou FDM_BROWSER_PATH=/usr/bin/chromium
-cp .env.example .env && $EDITOR .env      # OPENAI_API_KEY, nom de l'agent…
-fdm doctor
+pip install -e join && python -m playwright install chromium   # ou FDM_BROWSER_PATH=/usr/bin/chromium
+
+cp .env.example .env && $EDITOR .env      # OPENAI_API_KEY, prénom, surnoms…
 ```
 
 ## Utilisation
 
-### 1. Le bot rejoint la réunion tout seul (nouvelle personne dans la réunion)
 ```bash
-fdm join "https://teams.microsoft.com/l/meetup-join/..." --name "Nova" --context "Réunion projet X, ordre du jour : …"
+# 1. Vérifier le son sans IA : le bot répète ce qu'il entend
+fdm --echo-test --join "https://teams.microsoft.com/l/meetup-join/..."
+
+# 2. Pour de vrai : il rejoint et participe
+fdm --join "https://teams.microsoft.com/l/meetup-join/..." --context "Point projet X, avec Alice et Paul"
 ```
-Une fenêtre Chromium s'ouvre : « Continuer sur ce navigateur » → saisit le nom → coupe la caméra → « Rejoindre
-maintenant ». L'organisateur l'admet depuis la salle d'attente, et c'est parti. Si l'interface Teams a changé et
-qu'une étape bloque, **cliquez simplement dans la fenêtre** : le pont audio tourne déjà.
-Fermer la fenêtre ou `Ctrl+C` arrête tout et nettoie les périphériques.
 
-Astuce : le profil du navigateur est conservé (`.fdm-browser-profile/`). Vous pouvez vous y connecter une fois avec un
-compte Microsoft dédié au bot (ex. `assistant@votreboite.com`) pour éviter la salle d'attente des invités.
+Une fenêtre Chromium s'ouvre et clique sur « Continuer sur ce navigateur », saisit son nom, coupe la caméra puis
+clique sur « Rejoindre ». L'organisateur l'admet depuis la salle d'attente. Si l'interface Teams a changé, cliquez
+vous-même dans la fenêtre : l'audio est déjà branché. Fermer la fenêtre arrête le navigateur, Ctrl+C arrête tout.
 
-### 2. Vous branchez vous-même un client Teams
-```bash
-fdm listen
-```
-Puis dans ce client Teams (ex. `teams-for-linux` sur un 2ᵉ compte) : *Paramètres → Périphériques* → haut-parleur
-**FDM-Reunion**, micro **FDM-Micro-IA**. ⚠️ Si vous le faites dans *votre* Teams, l'IA parlera **à votre place**.
+Sans pilotage du navigateur : lancez `fdm` seul, puis, dans **n'importe quel** client Teams dédié au bot (autre
+profil de navigateur, `teams-for-linux` avec un 2ᵉ compte…), choisissez *Haut-parleur : FDM Réunion* et
+*Micro : FDM Micro IA*. ⚠️ Pas dans votre propre Teams, sinon l'IA parle à votre place.
 
-### Options utiles
-| Option | Effet |
-|---|---|
-| `--name` | Nom affiché et nom auquel elle réagit |
-| `--reply-mode name\|always` | Voir ci-dessus |
-| `--voice marin` | Voix OpenAI (`marin`, `cedar`, `alloy`, …) |
-| `--language fr` | Langue de transcription |
-| `--context "…"` | Rôle / ordre du jour / infos |
-| `--no-barge-in` | Ne se tait pas quand on parle par-dessus |
-| `--monitor` | Vous entendez aussi ce que le bot entend et dit (debug) |
-| `-v` | Logs détaillés |
+Astuce : connectez une fois le navigateur du bot (profil `.fdm-browser-profile/`) à un compte Microsoft dédié pour
+éviter la salle d'attente des invités.
 
-`fdm audio-teardown` supprime des périphériques laissés par une session plantée.
+Toutes les options : `fdm --help` (chacune a son équivalent `FDM_*` dans `.env`).
 
 ## Tests
+
 ```bash
-pip install -e '.[dev]' && pytest
+cargo test --manifest-path core/Cargo.toml
 ```
 
-## Pistes suivantes
-- **Qui parle ?** Lire les sous-titres en direct de Teams (DOM de la page du bot) qui affichent le nom de chaque
-  orateur, et les injecter au modèle (`[Alice] …`) pour une attribution fiable.
-- Outils (function calling) : prise de notes, compte-rendu en fin de réunion, recherche dans des docs.
-- Auto-join depuis le calendrier (Microsoft Graph) ; Google Meet / Zoom (même principe audio).
+Vérifié aussi de bout en bout dans PipeWire, avec de faux serveurs Live/Realtime : son nom ouvre la parole, sa voix
+arrive dans `fdm_ai_mic`, il est bloqué s'il parle sans être appelé, il se fait couper, et le flux montant reste
+continu. Et avec un vrai Chromium : sa sortie arrive dans `fdm_meeting` et son micro écoute `fdm_ai_mic`.
+
+## Pistes
+
+- **Qui parle ?** Lire les sous-titres en direct de Teams (ils affichent le nom de chaque orateur) dans la page du
+  bot, et les envoyer à `fdm` (socket local) pour les donner au modèle en pensée silencieuse.
+- Délégation `client` : brancher notre propre LLM et nos outils (prise de notes, compte-rendu, recherche dans des docs).
+- Fin d'échange jugée par le modèle lui-même (Decisions de l'API Live) plutôt que par des règles.

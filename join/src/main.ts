@@ -38,7 +38,14 @@ if (platform !== "teams") {
 }
 
 const profileDir = resolve(values.profile!);
-const context = await launchBotBrowser({ profileDir, headless: values.headless!, executablePath: values.browser, displayName: values.name });
+// Un échec ici (profil verrouillé, navigateur absent…) doit se voir dans le journal de l'interface.
+const context = await launchBotBrowser({ profileDir, headless: values.headless!, executablePath: values.browser, displayName: values.name }).catch((e: Error) => {
+  const why = /profile appears to be in use/.test(e.message)
+    ? `profil du navigateur verrouillé par un autre Chromium (${profileDir}/SingletonLock) : redémarrez le conteneur`
+    : e.message.split("\n")[0];
+  log(`⚠️  le navigateur du bot ne démarre pas : ${why}`);
+  process.exit(1);
+});
 const page = context.pages()[0] ?? (await context.newPage());
 const routing = setInterval(() => routeBrowserStreams(profileDir, log), 3000);
 // État des connexions WebRTC de Teams (voir watchConnections) : utile quand un appel est coupé.

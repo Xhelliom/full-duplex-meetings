@@ -8,6 +8,9 @@ mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 # État WirePlumber neuf à chaque démarrage : il mémorise les cibles audio des applications, et une
 # cible disparue bloque ses branchements.
 rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber"
+# Verrou de profil laissé par le Chromium d'un conteneur précédent (arrêté pendant une réunion) :
+# Chromium refuserait de démarrer. Le profil ne sert qu'à ce conteneur, le verrou est donc périmé.
+rm -f "${FDM_BROWSER_PROFILE:-$HOME/profile}"/Singleton{Lock,Socket,Cookie}
 
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile

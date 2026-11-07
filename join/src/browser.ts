@@ -55,7 +55,12 @@ function watchConnections(): void {
       const fmt = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k}×${v}`).join(" ") || "aucun";
       const inc = (o: Record<string, number>, k: string) => (o[k] = (o[k] ?? 0) + 1);
       const capture = async () => {
-        if (this.connectionState === "closed") return;
+        // Fermée sans passer par notre close() (Teams appelle parfois la méthode d'origine).
+        if (this.connectionState === "closed" || this.signalingState === "closed") {
+          clearInterval(timer);
+          reportIfNeverConnected("fermée par Teams");
+          return;
+        }
         const kinds: Record<string, number> = {};
         this.getTransceivers().forEach((t) => inc(kinds, `${t.receiver.track?.kind ?? "?"}:${t.direction}`));
         const servers = (this.getConfiguration().iceServers ?? [])

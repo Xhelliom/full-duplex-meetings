@@ -7,7 +7,7 @@ import { parseArgs } from "node:util";
 import { RTC_LOG, launchBotBrowser } from "./browser.js";
 import { AI_MIC, MEETING_SINK, devicesPresent, routeBrowserStreams } from "./devices.js";
 import { platformOf } from "./platform.js";
-import { joinTeams, leaveTeams, waitForEnd, waitInCall } from "./teams.js";
+import { cameraOff, joinTeams, leaveTeams, waitForEnd, waitInCall } from "./teams.js";
 
 const log = (m: string) => console.log(`${new Date().toLocaleTimeString("fr-FR")} [fdm-join] ${m}`);
 
@@ -72,5 +72,6 @@ try {
 // Une fois dans l'appel (automatiquement ou à la main), on surveille la fin de la réunion pour
 // ne pas laisser tourner la session gpt-live : le service voit le navigateur s'arrêter et la ferme.
 await waitInCall(page);
+await cameraOff(page, log, "dans l'appel");
 await waitForEnd(page, log);
 await stop(0);

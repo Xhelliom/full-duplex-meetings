@@ -60,15 +60,7 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
   } else {
     log("pas de champ nom (profil connecté à un compte ?)");
   }
-  try {
-    const camera = page.locator('[data-tid="toggle-video"]').first();
-    if ((await camera.isVisible()) && (await camera.getAttribute("aria-checked")) === "true") {
-      await camera.click();
-      log("caméra coupée");
-    }
-  } catch {
-    /* pas de bouton caméra */
-  }
+  await cameraOff(page, log, "avant d'entrer");
 
   // 3. Rejoindre
   if (!(await clickFirst([page.locator('[data-tid="prejoin-join-button"]'), page.getByRole("button", { name: JOIN_NOW })], 30_000))) {
@@ -85,6 +77,38 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
     return true;
   }
   log("⚠️  toujours pas admis après 10 min");
+  return false;
+}
+
+const CAMERA = /cam[ée]ra|vid[ée]o/i;
+const CAMERA_OFF = /^(d[ée]sactiver|arr[êe]ter|couper|turn off|stop)\b.*(cam[ée]ra|vid[ée]o)/i;
+
+/** Coupe sa caméra (elle est virtuelle : une image à son nom). Avant d'entrer, c'est un
+ * interrupteur ; dans l'appel, un bouton « Désactiver la caméra ». Journalise ce qui a été fait. */
+export async function cameraOff(page: Page, log: (m: string) => void, when: string): Promise<boolean> {
+  const switches = [
+    page.locator('[data-tid="toggle-video"]'),
+    page.getByRole("switch", { name: CAMERA }),
+    page.getByRole("checkbox", { name: CAMERA }),
+  ];
+  for (const loc of switches) {
+    for (const el of await loc.all().catch(() => [])) {
+      const on = (await el.getAttribute("aria-checked").catch(() => null)) ?? (await el.getAttribute("aria-pressed").catch(() => null));
+      const checked = on === "true" || (on === null && (await el.isChecked().catch(() => false)));
+      if (checked) {
+        await el.click({ force: true, timeout: 3_000 }).catch(() => {});
+        log(`caméra coupée (${when})`);
+        return true;
+      }
+    }
+  }
+  const button = page.getByRole("button", { name: CAMERA_OFF, includeHidden: true }).first();
+  if ((await button.count().catch(() => 0)) > 0) {
+    await page.mouse.move(620, 400).catch(() => {});
+    await button.click({ force: true, timeout: 3_000 }).catch(() => {});
+    log(`caméra coupée (${when})`);
+    return true;
+  }
   return false;
 }
 
@@ -155,6 +179,7 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
         goneSince = 0;
         await waitInCallFor(page, 60_000);
         log((await callControlsPresent(page)) ? "de retour dans l'appel" : "pas encore de retour dans l'appel");
+        await cameraOff(page, log, "après être revenu");
       } else log("bouton « Rejoindre l'appel » introuvable");
       continue;
     }

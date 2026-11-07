@@ -77,15 +77,15 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
   }
   log("demande envoyée — l'organisateur doit peut-être l'admettre depuis la salle d'attente");
 
-  // 4. Dans l'appel quand le bouton « Quitter » apparaît
-  try {
-    await page.getByRole("button", { name: LEAVE }).first().waitFor({ state: "visible", timeout: 10 * 60_000 });
+  // 4. Dans l'appel quand les contrôles d'appel apparaissent (même masqués)
+  await waitInCallFor(page, 10 * 60_000);
+  if (page.isClosed()) return false; // arrêt demandé pendant l'attente
+  if (await callControlsPresent(page)) {
     log("✅ le bot est dans la réunion");
     return true;
-  } catch {
-    log("⚠️  toujours pas admis après 10 min");
-    return false;
   }
+  log("⚠️  toujours pas admis après 10 min");
+  return false;
 }
 
 /** Attend que le bot soit dans l'appel (entré automatiquement ou à la main via VNC), sans limite. */
@@ -193,6 +193,24 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
   }
 }
 
-export async function leaveTeams(page: Page): Promise<void> {
-  await clickFirst([page.getByRole("button", { name: LEAVE })], 2_000);
+/** Raccroche vraiment : sans ça, fermer le navigateur laisse un participant « fantôme » dans la
+ * réunion jusqu'à expiration côté Teams. La barre d'outils est souvent masquée : on bouge la souris
+ * pour la faire revenir, et on clique le bouton même s'il est encore caché. */
+export async function leaveTeams(page: Page, log: (m: string) => void): Promise<void> {
+  if (page.isClosed()) return;
+  await page.mouse.move(600, 380).catch(() => {});
+  await page.mouse.move(640, 420).catch(() => {});
+  for (const loc of [page.locator('[data-tid="hangup-main-btn"], #hangup-button'), page.getByRole("button", { name: LEAVE, includeHidden: true })]) {
+    const button = loc.first();
+    if ((await button.count().catch(() => 0)) === 0) continue;
+    try {
+      await button.click({ force: true, timeout: 3_000 });
+      await sleep(1_500); // le temps que Teams prévienne les autres participants
+      log("raccroché");
+      return;
+    } catch {
+      /* bouton suivant */
+    }
+  }
+  log("pas de bouton pour raccrocher (déjà sorti de l'appel ?)");
 }

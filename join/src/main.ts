@@ -53,7 +53,7 @@ async function stop(code = 0): Promise<never> {
     stopping = true;
     clearInterval(routing);
     log("le bot quitte la réunion");
-    await leaveTeams(page).catch(() => {});
+    await leaveTeams(page, log).catch(() => {});
     await context.close().catch(() => {});
   }
   process.exit(code);

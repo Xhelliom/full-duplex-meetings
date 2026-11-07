@@ -45,7 +45,33 @@ function watchConnections(): void {
       super(...args);
       const id = ++n;
       const say = (m: string) => console.log(`[fdm-rtc] connexion ${id} : ${m}`);
-      this.addEventListener("connectionstatechange", () => say(`état ${this.connectionState}`));
+      let stuck: ReturnType<typeof setTimeout> | undefined;
+      this.addEventListener("connectionstatechange", () => {
+        say(`état ${this.connectionState}`);
+        clearTimeout(stuck);
+        if (this.connectionState === "connecting") stuck = setTimeout(() => void report(), 15_000);
+      });
+      // Bloquée en « connecting » : ce qu'elle transporte et ce qu'ICE a essayé.
+      const report = async () => {
+        const media = this.getTransceivers().map((t) => `${t.receiver.track?.kind ?? "?"}:${t.direction}`).join(" ") || "aucun";
+        const servers = (this.getConfiguration().iceServers ?? [])
+          .flatMap((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]))
+          .map((u) => u.replace(/\?.*$/, ""))
+          .join(" ");
+        const local: Record<string, number> = {};
+        const remote: Record<string, number> = {};
+        const pairs: Record<string, number> = {};
+        const stats = await this.getStats();
+        stats.forEach((s: any) => {
+          if (s.type === "local-candidate") local[`${s.candidateType}/${s.protocol}${s.relayProtocol ? "-" + s.relayProtocol : ""}`] = (local[`${s.candidateType}/${s.protocol}${s.relayProtocol ? "-" + s.relayProtocol : ""}`] ?? 0) + 1;
+          if (s.type === "remote-candidate") remote[`${s.candidateType}/${s.protocol}:${s.port}`] = (remote[`${s.candidateType}/${s.protocol}:${s.port}`] ?? 0) + 1;
+          if (s.type === "candidate-pair") pairs[s.state] = (pairs[s.state] ?? 0) + 1;
+        });
+        const fmt = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k}×${v}`).join(" ") || "aucun";
+        say(`toujours « ${this.connectionState} » après 15 s — ICE ${this.iceConnectionState}, collecte ${this.iceGatheringState}, ` +
+          `signalisation ${this.signalingState} | médias ${media} | serveurs ${servers || "aucun"} | ` +
+          `candidats locaux ${fmt(local)} | distants ${fmt(remote)} | paires ${fmt(pairs)}`);
+      };
       this.addEventListener("iceconnectionstatechange", () => {
         if (["failed", "disconnected"].includes(this.iceConnectionState)) say(`ICE ${this.iceConnectionState}`);
       });

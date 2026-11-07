@@ -311,8 +311,8 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                                 g.count += 1;
                                 if name == LEAVE_TOOL {
                                     info!("👋 On lui demande de quitter la réunion : il part dans {} s", LEAVE_DELAY.as_secs());
-                                    let output = "C'est noté : dis au revoir en une phrase courte, tu quittes la réunion \
-juste après.".to_string();
+                                    let output = "C'est fait : tu quittes la réunion dans quelques secondes. Si tu as déjà pris congé, ne dis \
+plus rien ; sinon, prends congé en une phrase courte (« Je vous laisse, à bientôt ! »).".to_string();
                                     let _ = internal_tx.send(Internal::ToolResult { delegation, call_id, output });
                                     let cancel = cancel.clone();
                                     tokio::spawn(async move {

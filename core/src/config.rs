@@ -104,7 +104,8 @@ pub struct Config {
 
 /// Ajouté au prompt voix quand il peut partir de lui-même (outil quitter_reunion du backend).
 const LEAVE_HINT: &str = " Quand on te demande de quitter la réunion, délègue-le dès la première demande : c'est \
-le seul moyen de partir, dire « je m'en vais » ne suffit pas. Puis dis au revoir en une phrase.";
+le seul moyen de partir. Ne l'annonce pas comme une tâche (pas de « je m'en occupe ») : prends congé comme un \
+collègue qui quitte une réunion, en une phrase, par exemple « Pas de souci, je vous laisse. À bientôt ! ».";
 
 impl Config {
     fn leave_hint(&self) -> &'static str {

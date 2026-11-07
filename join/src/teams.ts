@@ -98,6 +98,16 @@ export async function waitInCall(page: Page): Promise<void> {
 
 const ALONE =/seule? personne (ici|dans (la|cette) réunion)|personne d'autre n'est là|only (one|person) (here|in this meeting)|no one else is here/i;
 
+/** Appel coupé par Teams, qu'on peut reprendre (« Rejoindre l'appel »). */
+const DROPPED = /appel a été coupé|appel a été interrompu|call (was|has been) dropped|we lost (the|your) connection|call dropped/i;
+const REJOIN = /^\s*(rejoindre l'appel|rejoin( call)?|rejoindre)\s*$/i;
+const MAX_REJOINS = 3;
+
+async function waitInCallFor(page: Page, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline && !page.isClosed() && !(await callControlsPresent(page))) await sleep(2_000);
+}
+
 /** Ce que Teams affiche quand on n'est plus dans l'appel. */
 const ENDED = /vous avez quitté|la réunion (est terminée|a pris fin|s'est terminée)|vous avez été (retiré|supprimé|exclu)|you('ve| have) (left|been removed)|(the )?meeting (has )?ended|call ended|rejoindre à nouveau|^\s*rejoin\s*$/i;
 /** Sans signe de fin explicite, l'absence des contrôles d'appel ne suffit qu'au-delà de ce délai. */
@@ -119,7 +129,11 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
   let goneSince = 0;
   let endedSeen = 0;
   let aloneSince = 0;
-  const where = async () => `page « ${await page.title().catch(() => "?")} », ${page.url()}`;
+  let rejoins = 0;
+  const where = async () => {
+    const u = new URL(page.url());
+    return `page « ${await page.title().catch(() => "?")} », ${u.host}${u.pathname}`;
+  };
   for (;;) {
     await sleep(5_000);
     if (page.isClosed()) {
@@ -127,6 +141,23 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
       return;
     }
     const now = Date.now();
+
+    // 0. Appel coupé par Teams (« Oh oh… votre appel a été coupé ») : on rejoint, quelques fois.
+    if (await page.getByText(DROPPED).first().isVisible().catch(() => false)) {
+      if (rejoins >= MAX_REJOINS) {
+        log(`départ : Teams a coupé l'appel ${rejoins + 1} fois (${await where()})`);
+        return;
+      }
+      rejoins++;
+      log(`⚠️  Teams a coupé l'appel : il rejoint (essai ${rejoins}/${MAX_REJOINS})`);
+      if (await clickFirst([page.getByRole("button", { name: REJOIN })], 5_000)) {
+        await clickFirst([page.locator('[data-tid="prejoin-join-button"]'), page.getByRole("button", { name: JOIN_NOW })], 20_000);
+        goneSince = 0;
+        await waitInCallFor(page, 60_000);
+        log((await callControlsPresent(page)) ? "de retour dans l'appel" : "pas encore de retour dans l'appel");
+      } else log("bouton « Rejoindre l'appel » introuvable");
+      continue;
+    }
 
     // 1. Teams dit explicitement que c'est fini (vu deux fois de suite, pour éviter un message fugace).
     const ended = page.getByText(ENDED).first();

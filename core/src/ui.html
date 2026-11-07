@@ -23,7 +23,7 @@
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; max-width: 980px; margin: 0 auto; }
   header h1 { font-size: 20px; margin: 0; flex: 1; }
-  main { max-width: 980px; margin: 0 auto; padding: 0 16px 120px; display: grid; gap: 16px; }
+  main { max-width: 980px; margin: 0 auto; padding: 0 16px 120px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
   section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
   section h2 { font-size: 16px; margin: 0 0 4px; }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
@@ -79,7 +79,7 @@
   .with-btn { display: flex; gap: 6px; }
   .with-btn input { flex: 1; min-width: 0; }
   button.ai { padding: 9px 12px; font-weight: 600; color: var(--accent); white-space: nowrap; }
-  .screen { width: 100%; aspect-ratio: 16 / 10; background: #000; border-radius: 8px; overflow: hidden; }
+  .screen { width: 100%; max-width: 100%; min-width: 0; aspect-ratio: 16 / 10; background: #000; border-radius: 8px; overflow: hidden; }
   .screen:fullscreen { border-radius: 0; aspect-ratio: auto; }
   .screen-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .label-row h2 { margin: 0; }

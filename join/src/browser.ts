@@ -27,7 +27,31 @@ export async function launchBotBrowser(opts: BrowserOptions): Promise<BrowserCon
     locale: "fr-FR",
   });
   await context.addInitScript(virtualCamera, opts.displayName ?? "");
+  await context.addInitScript(watchConnections);
   return context;
+}
+
+/** Préfixe des messages de console relayés dans le journal du bot. */
+export const RTC_LOG = "[fdm-rtc]";
+
+/** Journalise l'état des connexions WebRTC de Teams (via la console, relayée par fdm-join) : quand
+ * un appel est coupé, on voit si c'est le réseau (ICE failed/disconnected) ou Teams lui-même. */
+function watchConnections(): void {
+  const Real = window.RTCPeerConnection;
+  if (!Real) return;
+  let n = 0;
+  class Watched extends Real {
+    constructor(...args: ConstructorParameters<typeof RTCPeerConnection>) {
+      super(...args);
+      const id = ++n;
+      const say = (m: string) => console.log(`[fdm-rtc] connexion ${id} : ${m}`);
+      this.addEventListener("connectionstatechange", () => say(`état ${this.connectionState}`));
+      this.addEventListener("iceconnectionstatechange", () => {
+        if (["failed", "disconnected"].includes(this.iceConnectionState)) say(`ICE ${this.iceConnectionState}`);
+      });
+    }
+  }
+  window.RTCPeerConnection = Watched;
 }
 
 /** La machine du bot n'a pas de caméra. Or Teams demande micro et caméra d'un seul appel : sans

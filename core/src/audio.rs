@@ -13,6 +13,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use pipewire as pw;
@@ -27,8 +28,11 @@ const STRIDE: usize = 2; // S16 mono
 /// Marge tolérée au-dessus de la réserve anti-gigue avant de jeter du silence (150 ms).
 const CATCH_UP_SLACK: usize = SAMPLE_RATE as usize * 150 / 1000;
 
+/// Personne n'a lu le micro depuis ce délai : sa voix n'est pas écoutée (salle d'attente, appel
+/// coupé, micro coupé dans Teams).
+const NOBODY_LISTENING_MS: u64 = 500;
+
 /// File d'attente de la voix de l'IA, lue par le callback PipeWire.
-#[derive(Default)]
 pub struct Playback {
     queue: Mutex<VecDeque<i16>>,
     /// Tampon anti-gigue : rien n'est joué tant qu'on n'a pas autant d'audio en réserve (et de
@@ -36,6 +40,21 @@ pub struct Playback {
     /// irrégulières : sans réserve, chaque trame en retard ferait un clic. 0 = désactivé.
     prime_samples: AtomicU64,
     primed: std::sync::atomic::AtomicBool,
+    epoch: Instant,
+    /// Dernière lecture du micro par PipeWire (ms depuis `epoch`, 0 = jamais).
+    last_read_ms: AtomicU64,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            queue: Mutex::default(),
+            prime_samples: AtomicU64::new(0),
+            primed: Default::default(),
+            epoch: Instant::now(),
+            last_read_ms: AtomicU64::new(0),
+        }
+    }
 }
 
 impl Playback {
@@ -44,11 +63,28 @@ impl Playback {
         pb.prime_samples.store(ms * SAMPLE_RATE as u64 / 1000, Ordering::Relaxed);
         pb
     }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64 + 1
+    }
+
+    /// Quelqu'un (le navigateur dans l'appel) lit-il le micro du bot en ce moment ?
+    pub fn listened(&self) -> bool {
+        let last = self.last_read_ms.load(Ordering::Relaxed);
+        last != 0 && self.now_ms() - last <= NOBODY_LISTENING_MS
+    }
+
     /// gpt-live envoie un flux continu (silence compris) : le moindre à-coup réseau, ou un écart
     /// d'horloge avec PipeWire, s'ajouterait pour toujours au retard. Au-delà de la réserve voulue,
     /// on jette donc les trames de silence pour revenir au direct, sans rien couper d'audible.
+    /// Et quand personne ne lit le micro, on ne garde rien : ce qu'il dit dans le vide ne doit pas
+    /// ressortir plus tard, en retard, une fois l'appel (re)pris.
     pub fn push(&self, samples: &[i16]) {
         let mut q = self.queue.lock().unwrap();
+        if !self.listened() {
+            q.clear();
+            return;
+        }
         let target = self.prime_samples.load(Ordering::Relaxed) as usize + CATCH_UP_SLACK;
         if q.len() > target && !is_audible(samples) {
             return;
@@ -61,6 +97,7 @@ impl Playback {
         self.queue.lock().unwrap().len() as u64 * 1000 / SAMPLE_RATE as u64
     }
     fn fill(&self, out: &mut [u8]) {
+        self.last_read_ms.store(self.now_ms(), Ordering::Relaxed);
         let mut q = self.queue.lock().unwrap();
         if !self.primed.load(Ordering::Relaxed) {
             if (q.len() as u64) < self.prime_samples.load(Ordering::Relaxed).max(1) {
@@ -297,6 +334,7 @@ mod tests {
     fn prebuffer() {
         let pb = Playback::with_prebuffer_ms(200);
         let mut out = vec![0u8; 960];
+        pb.fill(&mut out); // le navigateur lit le micro
         pb.push(&[5; 2400]); // 100 ms : pas assez
         pb.fill(&mut out);
         assert!(out.iter().all(|x| *x == 0));
@@ -308,11 +346,25 @@ mod tests {
     #[test]
     fn rattrape_le_retard_en_jetant_du_silence() {
         let pb = Playback::with_prebuffer_ms(200);
+        pb.fill(&mut [0u8; 2]); // le navigateur lit le micro
         for _ in 0..20 {
             pb.push(&[0; 2400]); // 2 s de silence d'un coup (à-coup réseau)
         }
         assert!(pb.backlog_ms() <= 450, "{} ms", pb.backlog_ms());
         pb.push(&[3000; 2400]); // la voix, elle, n'est jamais jetée
         assert!(pb.backlog_ms() >= 400);
+    }
+
+    #[test]
+    fn rien_ne_s_accumule_quand_personne_n_ecoute() {
+        let pb = Playback::with_prebuffer_ms(200);
+        pb.push(&[3000; 24_000]); // salle d'attente : personne ne lit encore le micro
+        assert_eq!(pb.backlog_ms(), 0);
+        pb.fill(&mut [0u8; 2]);
+        pb.push(&[3000; 2400]);
+        assert_eq!(pb.backlog_ms(), 100);
+        std::thread::sleep(std::time::Duration::from_millis(NOBODY_LISTENING_MS + 100));
+        pb.push(&[3000; 2400]); // appel coupé : on vide au lieu de garder du retard
+        assert_eq!(pb.backlog_ms(), 0);
     }
 }

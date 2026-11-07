@@ -4,7 +4,7 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { launchBotBrowser } from "./browser.js";
+import { RTC_LOG, launchBotBrowser } from "./browser.js";
 import { AI_MIC, MEETING_SINK, devicesPresent, routeBrowserStreams } from "./devices.js";
 import { platformOf } from "./platform.js";
 import { joinTeams, leaveTeams, waitForEnd, waitInCall } from "./teams.js";
@@ -41,6 +41,11 @@ const profileDir = resolve(values.profile!);
 const context = await launchBotBrowser({ profileDir, headless: values.headless!, executablePath: values.browser, displayName: values.name });
 const page = context.pages()[0] ?? (await context.newPage());
 const routing = setInterval(() => routeBrowserStreams(profileDir, log), 3000);
+// État des connexions WebRTC de Teams (voir watchConnections) : utile quand un appel est coupé.
+page.on("console", (msg) => {
+  const text = msg.text();
+  if (text.startsWith(RTC_LOG)) log(text.slice(RTC_LOG.length).trim());
+});
 
 let stopping = false;
 async function stop(code = 0): Promise<never> {

@@ -1,7 +1,6 @@
 target/
-__pycache__/
-*.pyc
+node_modules/
+join/dist/
 .venv/
 .env
-*.egg-info/
 .fdm-browser-profile/

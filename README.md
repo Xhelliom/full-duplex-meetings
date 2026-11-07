@@ -1,74 +1,68 @@
 # full-duplex-meetings
 
-Un **collègue IA dans vos réunions Microsoft Teams**. Il rejoint la réunion comme un participant à part entière,
-entend tout le monde, et prend la parole **quand on l'appelle par son prénom, son surnom ou son nom**, comme on
-interpelle un humain. Ensuite il reste dans l'échange : les questions suivantes n'ont pas besoin de son nom, il
-parle aussi peu ou aussi longtemps qu'il le juge utile, et on lui coupe la parole si besoin.
+Un **participant IA** dans vos réunions Microsoft Teams, avec **OpenAI GPT-Live** (`gpt-live-1`), le modèle vocal
+full duplex. Il rejoint la réunion avec sa propre identité, écoute en permanence, et prend part à la conversation
+naturellement, comme un collègue :
 
-Linux (Arch) + PipeWire. Cœur en **Rust** (audio natif PipeWire + OpenAI), entrée dans Teams en **Python** (Playwright).
+- il répond quand on s'adresse à lui, avec ou sans son nom, et suit l'échange tant qu'il dure ;
+- il se tait quand les autres se parlent entre eux ou qu'on se tourne vers quelqu'un d'autre ;
+- il intervient de lui-même quand la discussion touche son domaine (`FDM_EXPERTISE`, `FDM_PROACTIVITY`) ;
+- il parle aussi peu ou aussi longtemps que nécessaire, et s'arrête dès qu'on lui coupe la parole.
+
+Aucune règle côté client : c'est le modèle qui gère le rythme de la conversation. Le code ne fait que le transport
+audio, et lui donne ses consignes (rôle, quand parler, acquiescements, interruptions, délégation), structurées
+comme le recommande le guide de prompting GPT-Live.
 
 ## Architecture
 
 ```
-┌─ fdm (Rust) ───────────────────────────────────────────────┐     ┌─ fdm-join (Python, facultatif) ─────┐
-│ crée 2 nœuds PipeWire (disparaissent à l'arrêt) :          │     │ Chromium dédié au bot, branché sur  │
-│   fdm_meeting  = haut-parleur du bot (il ENTEND la réunion)│◄────│ fdm_meeting / fdm_ai_mic, rejoint   │
-│   fdm_ai_mic   = micro du bot (il PARLE dans la réunion)   │────►│ la réunion comme invité « Nova »    │
-│ flux continu ⇄ OpenAI : gpt-live-1 (défaut) ou gpt-realtime│     └─────────────────────────────────────┘
-│ savoir-vivre : quand parler, quand se taire, interruptions │
-└────────────────────────────────────────────────────────────┘
+┌─ conteneur du bot (ou votre PC) ─────────────────────────────────────────────────────────────┐
+│  PipeWire                                                                                    │
+│   fdm_meeting : haut-parleur du bot ──► fdm (Rust) ──► gpt-live-1 (flux continu, 24 kHz)     │
+│   fdm_ai_mic  : micro du bot        ◄── fdm (Rust) ◄── sa voix (temps réel, 100 ms)          │
+│        ▲  ▼                                                                                  │
+│  Chromium du bot (fdm-join, TypeScript + Playwright) : rejoint Teams sous le nom « Nova »    │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Les deux moitiés ne se parlent pas : leur seul lien, ce sont les périphériques PipeWire. Votre propre Teams et
-votre son ne sont pas touchés : vous pouvez être dans la même réunion avec votre client habituel.
+- **`core/`, le cœur en Rust (binaire `fdm`).** Il crée les deux nœuds PipeWire, qui disparaissent à l'arrêt,
+  envoie le son de la réunion en continu (des zéros quand personne ne parle : gpt-live cale son rythme dessus) et
+  joue sa voix avec une petite réserve anti-gigue. Si la session se ferme, il en rouvre une avec l'historique de
+  la réunion.
+- **`join/`, l'entrée dans la réunion (TypeScript, Playwright).** Il ouvre un Chromium branché sur ces nœuds et
+  clique sur « Rejoindre ». `fdm --join <lien>` le lance lui-même.
 
-### Deux moteurs
+## Le plus simple : un conteneur
 
-| | **Live** (`gpt-live-1`, défaut) | **Realtime** (`gpt-realtime`) |
-|---|---|---|
-| Duplex | Vraiment full duplex : écoute et parle en même temps, gère seul le rythme et les interruptions | Tour par tour (détection de fin de phrase) ; écoute pendant qu'il parle et se laisse couper |
-| Quand parler | Une **porte** sur sa voix : fermée tant qu'on ne l'appelle pas, ouverte dès que son nom est entendu | On ne déclenche une réponse que s'il est appelé, puis à chaque phrase de l'échange ; il peut choisir de se taire (outil) |
-| Réflexion | Délègue à un modèle OpenAI (recherche web incluse) | Le même modèle |
-| Interruption | Gérée par le modèle | Coupure si quelqu'un parle par-dessus plus de 400 ms (les « hm » sont ignorés) |
-
-**Fin de l'échange**, comme entre humains : on le congédie (« merci Nova », « c'est bon Nova »), ou les autres
-continuent un bon moment entre eux sans s'adresser à lui (`FDM_DISENGAGE_SECONDS`, 90 s). Aucune limite de durée
-sur ce qu'il dit.
-
-## Installation (Arch)
+Le bot a sa propre machine (PipeWire, écran virtuel, navigateur) : rien de partagé avec votre poste ni votre
+session Teams.
 
 ```bash
-sudo pacman -S --needed rust clang pipewire pipewire-pulse wireplumber libpulse python
-git clone <ce dépôt> && cd full-duplex-meetings
-
-cargo install --path core                 # installe le binaire `fdm` dans ~/.cargo/bin
-
-python -m venv .venv && source .venv/bin/activate
-pip install -e join && python -m playwright install chromium   # ou FDM_BROWSER_PATH=/usr/bin/chromium
-
-cp .env.example .env && $EDITOR .env      # OPENAI_API_KEY, prénom, surnoms…
+cp .env.example .env && $EDITOR .env          # OPENAI_API_KEY, nom, domaines…
+docker compose build
+FDM_JOIN="https://teams.microsoft.com/l/meetup-join/..." docker compose run --rm bot
 ```
 
-## Utilisation
+Ensuite, admettez « Nova » depuis la salle d'attente de Teams. Pour voir l'écran du bot (et cliquer si l'interface
+de Teams a changé), ouvrez un client VNC sur `localhost:5900`. `Ctrl+C` ou `docker stop` : il quitte la réunion
+et ferme proprement sa session.
+
+**Identité :** par défaut, il rejoint en **invité** sous son nom. Pour un vrai compte (sans salle d'attente),
+créez un compte Microsoft pour le bot et connectez-le une fois dans son navigateur, via VNC. Le profil est gardé
+dans le volume `bot-profile`.
+
+## Sans conteneur (Arch)
 
 ```bash
-# 1. Vérifier le son sans IA : le bot répète ce qu'il entend
-fdm --echo-test --join "https://teams.microsoft.com/l/meetup-join/..."
-
-# 2. Pour de vrai : il rejoint et participe
-fdm --join "https://teams.microsoft.com/l/meetup-join/..." --context "Point projet X, avec Alice et Paul"
+sudo pacman -S --needed rust clang pipewire pipewire-pulse wireplumber libpulse nodejs npm
+cargo install --path core                              # binaire fdm
+(cd join && npm ci && npm run build && npm install -g .) && npx playwright install chromium
+fdm --echo-test --join "<lien>"                        # vérifier le son sans IA : il répète ce qu'il entend
+fdm --join "<lien>"
 ```
 
-Une fenêtre Chromium s'ouvre et clique sur « Continuer sur ce navigateur », saisit son nom, coupe la caméra puis
-clique sur « Rejoindre ». L'organisateur l'admet depuis la salle d'attente. Si l'interface Teams a changé, cliquez
-vous-même dans la fenêtre : l'audio est déjà branché. Fermer la fenêtre arrête le navigateur, Ctrl+C arrête tout.
-
-Sans pilotage du navigateur : lancez `fdm` seul, puis, dans **n'importe quel** client Teams dédié au bot (autre
-profil de navigateur, `teams-for-linux` avec un 2ᵉ compte…), choisissez *Haut-parleur : FDM Réunion* et
-*Micro : FDM Micro IA*. ⚠️ Pas dans votre propre Teams, sinon l'IA parle à votre place.
-
-Astuce : connectez une fois le navigateur du bot (profil `.fdm-browser-profile/`) à un compte Microsoft dédié pour
-éviter la salle d'attente des invités.
+Sans pilotage du navigateur, lancez `fdm`, puis choisissez *FDM Réunion* comme haut-parleur et *FDM Micro IA* comme
+micro dans un client Teams **dédié au bot**. Pas dans le vôtre, sinon il parle à votre place.
 
 Toutes les options : `fdm --help` (chacune a son équivalent `FDM_*` dans `.env`).
 
@@ -76,15 +70,20 @@ Toutes les options : `fdm --help` (chacune a son équivalent `FDM_*` dans `.env`
 
 ```bash
 cargo test --manifest-path core/Cargo.toml
+(cd join && npm test)
 ```
 
-Vérifié aussi de bout en bout dans PipeWire, avec de faux serveurs Live/Realtime : son nom ouvre la parole, sa voix
-arrive dans `fdm_ai_mic`, il est bloqué s'il parle sans être appelé, il se fait couper, et le flux montant reste
-continu. Et avec un vrai Chromium : sa sortie arrive dans `fdm_meeting` et son micro écoute `fdm_ai_mic`.
+Vérifié aussi de bout en bout, avec un faux serveur `gpt-live-1` :
+- dans PipeWire sur le poste : il entend la réunion, sa voix arrive dans `fdm_ai_mic`, le flux montant reste
+  continu, et un vrai Chromium joue dans `fdm_meeting` et écoute `fdm_ai_mic` ;
+- dans le conteneur : tout démarre, l'aller-retour audio fonctionne, et `docker stop` est propre.
 
-## Pistes
+## Notes
 
-- **Qui parle ?** Lire les sous-titres en direct de Teams (ils affichent le nom de chaque orateur) dans la page du
-  bot, et les envoyer à `fdm` (socket local) pour les donner au modèle en pensée silencieuse.
-- Délégation `client` : brancher notre propre LLM et nos outils (prise de notes, compte-rendu, recherche dans des docs).
-- Fin d'échange jugée par le modèle lui-même (Decisions de l'API Live) plutôt que par des règles.
+- `gpt-live-1.1` est sorti dans ChatGPT, mais **pas encore dans l'API**. Ce sera `FDM_MODEL=gpt-live-1.1`.
+- Coût : environ 0,05 $ par minute de session, plus le modèle de délégation.
+- **Pistes :**
+  - savoir qui parle : les sous-titres en direct de Teams affichent le nom de chaque orateur, à transmettre au
+    modèle en pensée silencieuse ;
+  - Google Meet (`join/src/platform.ts` le reconnaît déjà) ;
+  - délégation `client` avec nos propres outils (notes, compte-rendu).

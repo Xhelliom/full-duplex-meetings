@@ -28,8 +28,6 @@ const STRIDE: usize = 2; // S16 mono
 #[derive(Default)]
 pub struct Playback {
     queue: Mutex<VecDeque<i16>>,
-    /// Échantillons réellement remis au graphe audio depuis le début de l'élément courant.
-    played: AtomicU64,
     /// Tampon anti-gigue : rien n'est joué tant qu'on n'a pas autant d'audio en réserve (et de
     /// nouveau après chaque panne sèche). gpt-live-1 envoie en temps réel par trames de 100 ms
     /// irrégulières : sans réserve, chaque trame en retard ferait un clic. 0 = désactivé.
@@ -46,21 +44,6 @@ impl Playback {
     pub fn push(&self, samples: &[i16]) {
         self.queue.lock().unwrap().extend(samples);
     }
-    /// Coupe net la voix (interruption).
-    pub fn flush(&self) {
-        self.queue.lock().unwrap().clear();
-        self.primed.store(false, Ordering::Relaxed);
-    }
-    pub fn is_playing(&self) -> bool {
-        !self.queue.lock().unwrap().is_empty()
-    }
-    /// Remet à zéro le compteur au début d'une nouvelle réponse audio.
-    pub fn start_item(&self) {
-        self.played.store(0, Ordering::Relaxed);
-    }
-    pub fn played_ms(&self) -> u64 {
-        self.played.load(Ordering::Relaxed) * 1000 / SAMPLE_RATE as u64
-    }
     fn fill(&self, out: &mut [u8]) {
         let mut q = self.queue.lock().unwrap();
         if !self.primed.load(Ordering::Relaxed) {
@@ -73,18 +56,9 @@ impl Playback {
         if q.is_empty() {
             self.primed.store(false, Ordering::Relaxed);
         }
-        let mut n = 0u64;
         for frame in out.chunks_exact_mut(STRIDE) {
-            let s = match q.pop_front() {
-                Some(s) => {
-                    n += 1;
-                    s
-                }
-                None => 0,
-            };
-            frame.copy_from_slice(&s.to_le_bytes());
+            frame.copy_from_slice(&q.pop_front().unwrap_or(0).to_le_bytes());
         }
-        self.played.fetch_add(n, Ordering::Relaxed);
     }
 }
 
@@ -313,6 +287,5 @@ mod tests {
         pb.push(&[5; 2400]); // 200 ms : on joue
         pb.fill(&mut out);
         assert_eq!(&out[..2], &5i16.to_le_bytes());
-        assert_eq!(pb.played_ms(), 20);
     }
 }

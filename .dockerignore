@@ -1,0 +1,6 @@
+core/target
+join/node_modules
+join/dist
+.venv
+.env
+.git

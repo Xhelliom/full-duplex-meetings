@@ -1,15 +1,13 @@
 mod audio;
-mod brain;
 mod config;
 mod live;
-mod names;
-mod realtime;
+mod shutdown;
 
 use anyhow::Result;
 use clap::Parser;
 use tracing::{debug, info};
 
-use config::{Config, Engine};
+use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,8 +20,7 @@ async fn main() -> Result<()> {
         .init();
     let cfg = Config::parse();
 
-    let prebuffer = if cfg.engine == Engine::Live { cfg.prebuffer_ms } else { 0 };
-    let audio = audio::start(prebuffer)?;
+    let audio = audio::start(cfg.prebuffer_ms)?;
     info!(
         "🔊 Périphériques PipeWire créés : haut-parleur « {} », micro « {} »",
         audio::MEETING_SINK,
@@ -31,31 +28,38 @@ async fn main() -> Result<()> {
     );
 
     // Le navigateur du bot (Python/Playwright) : processus enfant, tué quand fdm s'arrête.
-    let _joiner = match &cfg.join {
+    let mut joiner = match &cfg.join {
         Some(url) => {
             info!("🚪 Lancement de « {} » pour rejoindre la réunion…", cfg.join_cmd);
+            let mut parts = cfg.join_cmd.split_whitespace();
+            let program = parts.next().unwrap_or("fdm-join");
             Some(
-                tokio::process::Command::new(&cfg.join_cmd)
+                tokio::process::Command::new(program)
+                    .args(parts)
                     .arg(url)
                     .arg("--name")
                     .arg(&cfg.name)
                     .kill_on_drop(true)
                     .spawn()
-                    .map_err(|e| anyhow::anyhow!("impossible de lancer {} : {e} (pip install -e join ?)", cfg.join_cmd))?,
+                    .map_err(|e| anyhow::anyhow!("impossible de lancer {} : {e} (npm install -g ./join ?)", cfg.join_cmd))?,
             )
         }
         None => None,
     };
 
-    if cfg.echo_test {
-        return echo_test(audio).await;
-    }
-    anyhow::ensure!(!cfg.api_key.is_empty(), "OPENAI_API_KEY manquant (fichier .env ou variable d'environnement)");
+    let result = if cfg.echo_test {
+        echo_test(audio).await
+    } else if cfg.api_key.is_empty() {
+        Err(anyhow::anyhow!("OPENAI_API_KEY manquant (fichier .env ou variable d'environnement)"))
+    } else {
+        live::run(&cfg, audio).await
+    };
 
-    match cfg.engine {
-        Engine::Live => live::run(&cfg, audio).await,
-        Engine::Realtime => realtime::run(&cfg, audio).await,
+    // Laisser le navigateur quitter la réunion proprement avant de tout couper.
+    if let Some(child) = joiner.as_mut() {
+        shutdown::terminate(child, std::time::Duration::from_secs(5)).await;
     }
+    result
 }
 
 /// Ce qui arrive sur le haut-parleur du bot est rejoué dans son micro.
@@ -77,7 +81,7 @@ async fn echo_test(audio: audio::Audio) -> Result<()> {
                     total = 0;
                 }
             }
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = shutdown::requested() => return Ok(()),
         }
     }
 }

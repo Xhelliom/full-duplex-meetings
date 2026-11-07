@@ -1,0 +1,17 @@
+# docker compose run --rm bot                     (lien dans .env : FDM_JOIN=…)
+# FDM_JOIN="https://teams.microsoft.com/l/…" docker compose run --rm bot
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      FDM_JOIN: ${FDM_JOIN:-}
+      FDM_VNC: ${FDM_VNC:-1}
+    ports:
+      - "127.0.0.1:5900:5900"   # VNC : voir l'écran du bot, l'admettre, se connecter à son compte
+    volumes:
+      - bot-profile:/home/pwuser/profile
+    shm_size: 1gb               # Chromium en a besoin
+    init: true
+volumes:
+  bot-profile:

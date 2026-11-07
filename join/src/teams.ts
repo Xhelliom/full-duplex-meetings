@@ -91,34 +91,72 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
 /** Attend que le bot soit dans l'appel (entré automatiquement ou à la main via VNC), sans limite. */
 export async function waitInCall(page: Page): Promise<void> {
   while (!page.isClosed()) {
-    if (await page.getByRole("button", { name: LEAVE }).first().isVisible().catch(() => false)) return;
+    if (await callControlsPresent(page)) return;
     await sleep(2_000);
   }
 }
 
 const ALONE =/seule? personne (ici|dans (la|cette) réunion)|personne d'autre n'est là|only (one|person) (here|in this meeting)|no one else is here/i;
 
-/** Rend la main quand la réunion est finie pour le bot : il n'y est plus (fin de la réunion,
- * retiré par l'organisateur, réseau perdu…), ou il y est seul depuis `aloneMs`. */
+/** Ce que Teams affiche quand on n'est plus dans l'appel. */
+const ENDED = /vous avez quitté|la réunion (est terminée|a pris fin|s'est terminée)|vous avez été (retiré|supprimé|exclu)|you('ve| have) (left|been removed)|(the )?meeting (has )?ended|call ended|rejoindre à nouveau|^\s*rejoin\s*$/i;
+/** Sans signe de fin explicite, l'absence des contrôles d'appel ne suffit qu'au-delà de ce délai. */
+const NO_CONTROLS_MS = 90_000;
+
+/** Les contrôles d'appel sont-ils dans la page ? Teams masque sa barre d'outils quand la souris ne
+ * bouge pas : on regarde la présence du bouton « Quitter » dans la page, pas sa visibilité. */
+async function callControlsPresent(page: Page): Promise<boolean> {
+  for (const loc of [page.getByRole("button", { name: LEAVE, includeHidden: true }), page.locator('[data-tid="hangup-main-btn"], #hangup-button')]) {
+    if ((await loc.count().catch(() => 0)) > 0) return true;
+  }
+  return false;
+}
+
+/** Rend la main quand la réunion est finie pour le bot : Teams l'affiche (fin de la réunion, retiré par
+ * l'organisateur…), ses contrôles d'appel ont disparu depuis longtemps, ou il est seul depuis `aloneMs`.
+ * Chaque départ est journalisé avec sa raison, pour pouvoir corriger une fausse détection. */
 export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs = 5 * 60_000): Promise<void> {
   let goneSince = 0;
+  let endedSeen = 0;
   let aloneSince = 0;
+  const where = async () => `page « ${await page.title().catch(() => "?")} », ${page.url()}`;
   for (;;) {
     await sleep(5_000);
-    if (page.isClosed()) return;
-    const now = Date.now();
-    const inCall = await page.getByRole("button", { name: LEAVE }).first().isVisible().catch(() => false);
-    if (inCall) goneSince = 0;
-    else if (!goneSince) goneSince = now;
-    else if (now - goneSince >= 15_000) {
-      log("la réunion est terminée pour le bot (il n'y est plus)");
+    if (page.isClosed()) {
+      log("départ : la fenêtre de la réunion a été fermée");
       return;
     }
+    const now = Date.now();
+
+    // 1. Teams dit explicitement que c'est fini (vu deux fois de suite, pour éviter un message fugace).
+    const ended = page.getByText(ENDED).first();
+    if (await ended.isVisible().catch(() => false)) {
+      if (++endedSeen >= 2) {
+        const text = ((await ended.textContent().catch(() => "")) ?? "").trim().slice(0, 120);
+        log(`départ : Teams affiche « ${text} » (${await where()})`);
+        return;
+      }
+    } else endedSeen = 0;
+
+    // 2. Plus aucun contrôle d'appel dans la page depuis longtemps.
+    const inCall = await callControlsPresent(page);
+    if (inCall) {
+      if (goneSince) log("contrôles d'appel revenus : il est toujours dans la réunion");
+      goneSince = 0;
+    } else if (!goneSince) {
+      goneSince = now;
+      log(`contrôles d'appel introuvables (${await where()}) : il part si ça dure ${NO_CONTROLS_MS / 1000} s`);
+    } else if (now - goneSince >= NO_CONTROLS_MS) {
+      log(`départ : plus de contrôles d'appel depuis ${NO_CONTROLS_MS / 1000} s (${await where()})`);
+      return;
+    }
+
+    // 3. Seul dans la réunion.
     const alone = inCall && (await page.getByText(ALONE).first().isVisible().catch(() => false));
     if (!alone) aloneSince = 0;
     else if (!aloneSince) aloneSince = now;
     else if (now - aloneSince >= aloneMs) {
-      log(`seul dans la réunion depuis ${Math.round(aloneMs / 60_000)} min : il s'en va`);
+      log(`départ : seul dans la réunion depuis ${Math.round(aloneMs / 60_000)} min`);
       return;
     }
   }

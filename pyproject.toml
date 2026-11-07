@@ -1,0 +1,28 @@
+[project]
+name = "full-duplex-meetings"
+version = "0.1.0"
+description = "Agent vocal IA (OpenAI Realtime) qui rejoint une réunion Microsoft Teams comme un participant à part entière (Linux / PipeWire)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=13",
+    "python-dotenv>=1.0",
+    "playwright>=1.45",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+fdm = "fdm.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fdm"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

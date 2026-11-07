@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Participant IA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%233a5bd9'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dfe3ea;
+    --accent: #3a5bd9; --accent-text: #ffffff; --ok: #1f8f55; --warn: #b7791f; --err: #c53030;
+    --field: #ffffff; --code: #f0f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #9aa3b2; --line: #2c3340;
+      --accent: #7c95f5; --accent-text: #0e1220; --ok: #4cc38a; --warn: #e3b341; --err: #f37b7b;
+      --field: #141821; --code: #141821;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; max-width: 980px; margin: 0 auto; }
+  header h1 { font-size: 20px; margin: 0; flex: 1; }
+  main { max-width: 980px; margin: 0 auto; padding: 0 16px 120px; display: grid; gap: 16px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  section h2 { font-size: 16px; margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
+  label small { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=password], input[type=url], select, textarea {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--field); color: var(--text); font: inherit;
+  }
+  textarea { min-height: 84px; resize: vertical; }
+  textarea.tall { min-height: 180px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px; }
+  button { font: inherit; border-radius: 8px; padding: 9px 16px; border: 1px solid var(--line); background: var(--field); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  .join { display: flex; gap: 8px; flex-wrap: wrap; }
+  .join input { flex: 1; min-width: 240px; }
+  .pill { font-size: 13px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+  .pill.idle { color: var(--muted); }
+  .pill.joining { color: var(--warn); border-color: var(--warn); }
+  .pill.in_meeting { color: var(--ok); border-color: var(--ok); }
+  .pill.error { color: var(--err); border-color: var(--err); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--accent); color: var(--accent-text); }
+  .status-line { margin-top: 10px; font-size: 14px; color: var(--muted); }
+  .status-line.error { color: var(--err); }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+  .mcp { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+  .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .mcp-head input[type=text] { flex: 1 1 180px; width: auto; min-width: 0; }
+  .mcp-head select { flex: 0 1 220px; width: auto; }
+  .badge { font-size: 12px; color: var(--muted); }
+  .badge.ok { color: var(--ok); } .badge.err { color: var(--err); }
+  .switch { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 0; font-size: 14px; }
+  #log { background: var(--code); border-radius: 8px; padding: 10px 12px; height: 260px; overflow: auto; font: 12.5px/1.55 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+  #log .warn { color: var(--warn); } #log .error { color: var(--err); }
+  #log time { color: var(--muted); margin-right: 8px; }
+  pre.prompt { background: var(--code); border-radius: 8px; padding: 12px; white-space: pre-wrap; font-size: 13px; max-height: 420px; overflow: auto; }
+  .savebar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line); padding: 12px 16px; }
+  .savebar div { max-width: 980px; margin: 0 auto; display: flex; gap: 12px; align-items: center; justify-content: flex-end; }
+  #saveMsg { flex: 1; font-size: 14px; color: var(--muted); }
+  #saveMsg.error { color: var(--err); } #saveMsg.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Participant IA</h1>
+  <span id="pill" class="pill idle">en attente</span>
+</header>
+<main>
+
+  <section>
+    <h2>Rejoindre une réunion</h2>
+    <p class="hint">Collez le lien de la réunion Teams. Le bot ouvre son propre navigateur, entre sous son nom, et prend part à la conversation. Admettez-le depuis la salle d'attente si besoin.</p>
+    <div class="join">
+      <input id="meetingUrl" type="url" placeholder="https://teams.microsoft.com/l/meetup-join/…" autocomplete="off">
+      <button id="joinBtn" class="primary">Rejoindre</button>
+      <button id="leaveBtn" class="danger" disabled>Quitter</button>
+    </div>
+    <div id="statusLine" class="status-line"></div>
+  </section>
+
+  <section>
+    <h2>Identité et comportement</h2>
+    <p class="hint">Ce que le bot sait de lui-même et comment il se comporte en réunion. Appliqué à la prochaine réunion.</p>
+    <div class="row">
+      <div><label for="name">Nom affiché</label><input id="name" type="text" placeholder="Nova"></div>
+      <div><label for="voice">Voix</label>
+        <input id="voice" type="text" list="voices" placeholder="marin">
+        <datalist id="voices"><option>marin</option><option>cedar</option><option>alloy</option><option>ash</option><option>ballad</option><option>coral</option><option>echo</option><option>sage</option><option>shimmer</option><option>verse</option></datalist>
+      </div>
+      <div><label for="language">Langue</label><input id="language" type="text" placeholder="français"></div>
+    </div>
+    <label for="expertise">Rôle et domaines de compétence <small>— il interviendra de lui-même quand la discussion les touche</small></label>
+    <input id="expertise" type="text" placeholder="architecte logiciel, expert Rust et audio Linux">
+    <label>Prise de parole spontanée</label>
+    <div class="seg" id="proactivity">
+      <button data-v="reserve">Réservé</button><button data-v="normal">Normal</button><button data-v="active">Actif</button>
+    </div>
+    <label for="behavior">Consignes de comportement <small>— ton, rôle, ce qu'il doit faire ou éviter</small></label>
+    <textarea id="behavior" placeholder="Tutoie tout le monde. Quand on te demande un résumé, termine par les décisions et les actions avec leur responsable. Ne parle jamais de prix sans qu'on te le demande."></textarea>
+    <label for="context">Contexte des réunions <small>— équipe, projet, vocabulaire, participants habituels</small></label>
+    <textarea id="context" placeholder="Équipe produit de 6 personnes (Alice, Paul, …). Projet « Atlas » : migration vers Rust."></textarea>
+    <details>
+      <summary>Prompt système complet (avancé)</summary>
+      <p class="hint">S'il est rempli, il remplace entièrement le prompt généré à partir des champs ci-dessus (les consignes et le contexte restent ajoutés à la fin). <code>{name}</code> et <code>{language}</code> sont remplacés.</p>
+      <textarea id="system_prompt" class="tall" placeholder="Laisser vide pour utiliser le prompt généré."></textarea>
+      <p><button id="showPrompt" type="button">Voir le prompt effectif</button></p>
+      <pre id="promptView" class="prompt" hidden></pre>
+    </details>
+  </section>
+
+  <section>
+    <h2>Clé API OpenAI</h2>
+    <p class="hint">Stockée sur la machine du bot (fichier lisible par lui seul), jamais renvoyée à la page.</p>
+    <label for="api_key">Clé <small id="keyState"></small></label>
+    <input id="api_key" type="password" placeholder="sk-… (laisser vide pour garder la clé actuelle)" autocomplete="off">
+    <details>
+      <summary>Modèles</summary>
+      <div class="row">
+        <div><label for="model">Modèle vocal</label><input id="model" type="text" placeholder="gpt-live-1"></div>
+        <div><label for="delegation">Réflexion déléguée</label>
+          <select id="delegation"><option value="responses">Modèle OpenAI + outils</option><option value="client">Aucune (il répond avec ce qu'il sait)</option></select></div>
+        <div><label for="backend_model">Modèle de réflexion</label><input id="backend_model" type="text" placeholder="gpt-5.6-luna"></div>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <h2>Outils</h2>
+    <p class="hint">Utilisés quand il réfléchit (réflexion déléguée à un modèle OpenAI). Appliqués à la prochaine réunion.</p>
+    <label class="switch"><input id="web_search" type="checkbox"> Recherche web</label>
+    <h2 style="margin-top:18px">Serveurs MCP</h2>
+    <p class="hint"><b>Local</b> : le bot lance la commande ou se connecte à l'URL lui-même (serveur sur sa machine ou réseau privé). <b>OpenAI</b> : OpenAI appelle directement le serveur, qui doit avoir une URL https publique.</p>
+    <div id="mcpList"></div>
+    <button id="addMcp" type="button">+ Ajouter un serveur MCP</button>
+  </section>
+
+  <section>
+    <h2>Journal</h2>
+    <p class="hint">Ce qui se dit dans la réunion, ce que le bot répond, ses outils, ses erreurs.</p>
+    <div id="log"></div>
+  </section>
+</main>
+
+<div class="savebar"><div>
+  <span id="saveMsg"></span>
+  <button id="saveBtn" class="primary">Enregistrer les réglages</button>
+</div></div>
+
+<template id="mcpTpl">
+  <div class="mcp">
+    <div class="mcp-head">
+      <label class="switch"><input type="checkbox" data-f="enabled"> actif</label>
+      <input type="text" data-f="name" placeholder="nom (ex. agenda)">
+      <select data-f="mode">
+        <option value="stdio">Local — commande</option>
+        <option value="http">Local — URL</option>
+        <option value="openai">OpenAI — URL publique</option>
+      </select>
+      <button type="button" class="danger" data-act="remove">Supprimer</button>
+    </div>
+    <span class="badge" data-f="state"></span>
+    <div data-show="stdio">
+      <label>Commande <small>— un argument par ligne après la commande</small></label>
+      <input type="text" data-f="command" placeholder="npx">
+      <textarea data-f="args" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/home/pwuser/docs"></textarea>
+      <label>Variables d'environnement <small>— NOM=valeur, une par ligne</small></label>
+      <textarea data-f="env" placeholder="API_TOKEN=…"></textarea>
+    </div>
+    <div data-show="url">
+      <label>URL</label>
+      <input type="text" data-f="url" placeholder="https://exemple.com/mcp">
+      <label>En-têtes <small>— Nom: valeur, un par ligne</small></label>
+      <textarea data-f="headers" placeholder="Authorization: Bearer …"></textarea>
+    </div>
+    <div class="row">
+      <div><label>Description pour le modèle</label><input type="text" data-f="description" placeholder="l'agenda de l'équipe"></div>
+      <div><label>Outils autorisés <small>— vide = tous, séparés par des virgules</small></label><input type="text" data-f="allowed_tools"></div>
+    </div>
+  </div>
+</template>
+
+<script>
+const params = new URLSearchParams(location.search);
+if (params.get("token")) { try { localStorage.setItem("fdm_token", params.get("token")); } catch {} history.replaceState(null, "", location.pathname); }
+let token = ""; try { token = localStorage.getItem("fdm_token") || ""; } catch {}
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { "content-type": "application/json", "x-fdm-token": token, ...(opts.headers || {}) } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+// ------------------------------------------------------------------ réglages
+const FIELDS = ["name", "voice", "language", "expertise", "behavior", "context", "system_prompt", "model", "delegation", "backend_model"];
+let proactivity = "normal";
+let mcpStatus = [];
+
+function setProactivity(v) {
+  proactivity = v;
+  for (const b of $("proactivity").children) b.classList.toggle("on", b.dataset.v === v);
+}
+for (const b of $("proactivity").children) b.onclick = () => setProactivity(b.dataset.v);
+
+const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
+function toMap(text, sep) {
+  const out = {};
+  for (const l of lines(text)) { const i = l.indexOf(sep); if (i > 0) out[l.slice(0, i).trim()] = l.slice(i + 1).trim(); }
+  return out;
+}
+const fromMap = (m, sep) => Object.entries(m || {}).map(([k, v]) => `${k}${sep}${v}`).join("\n");
+
+function mcpMode(s) { return s.run_on === "openai" ? "openai" : (s.command ? "stdio" : (s.url ? "http" : "stdio")); }
+
+function addMcp(s = { enabled: true, run_on: "local" }) {
+  const node = $("mcpTpl").content.firstElementChild.cloneNode(true);
+  const f = (k) => node.querySelector(`[data-f="${k}"]`);
+  f("enabled").checked = s.enabled !== false;
+  f("name").value = s.name || "";
+  f("mode").value = mcpMode(s);
+  f("command").value = s.command || "";
+  f("args").value = (s.args || []).join("\n");
+  f("env").value = fromMap(s.env, "=");
+  f("url").value = s.url || "";
+  f("headers").value = fromMap(s.headers, ": ");
+  f("description").value = s.description || "";
+  f("allowed_tools").value = (s.allowed_tools || []).join(", ");
+  const show = () => {
+    const m = f("mode").value;
+    node.querySelector('[data-show="stdio"]').hidden = m !== "stdio";
+    node.querySelector('[data-show="url"]').hidden = m === "stdio";
+  };
+  f("mode").onchange = show; show();
+  node.querySelector('[data-act="remove"]').onclick = () => node.remove();
+  $("mcpList").append(node);
+  renderMcpStatus();
+}
+
+function readMcp() {
+  return [...$("mcpList").children].map((node) => {
+    const f = (k) => node.querySelector(`[data-f="${k}"]`);
+    const mode = f("mode").value;
+    return {
+      name: f("name").value.trim(), enabled: f("enabled").checked,
+      run_on: mode === "openai" ? "openai" : "local",
+      command: mode === "stdio" ? f("command").value.trim() : "",
+      args: mode === "stdio" ? lines(f("args").value) : [],
+      env: mode === "stdio" ? toMap(f("env").value, "=") : {},
+      url: mode === "stdio" ? "" : f("url").value.trim(),
+      headers: mode === "stdio" ? {} : toMap(f("headers").value, ":"),
+      description: f("description").value.trim(),
+      allowed_tools: f("allowed_tools").value.split(",").map((s) => s.trim()).filter(Boolean),
+    };
+  });
+}
+
+function renderMcpStatus() {
+  for (const node of $("mcpList").children) {
+    const name = node.querySelector('[data-f="name"]').value.trim();
+    const badge = node.querySelector('[data-f="state"]');
+    const st = mcpStatus.find((s) => s.name === name);
+    badge.className = "badge" + (st ? (st.ok ? " ok" : " err") : "");
+    badge.textContent = !st ? "connecté au début de chaque réunion"
+      : st.ok ? (st.run_on === "openai" ? "transmis à OpenAI" : `connecté — ${st.tools.length} outil(s) : ${st.tools.slice(0, 8).join(", ")}${st.tools.length > 8 ? "…" : ""}`)
+      : `erreur : ${st.error}`;
+  }
+}
+
+function fill(s) {
+  for (const k of FIELDS) $(k).value = s[k] ?? "";
+  setProactivity(s.proactivity || "normal");
+  $("web_search").checked = !!s.web_search;
+  $("api_key").value = "";
+  $("keyState").textContent = s.api_key_set ? `— configurée (${s.api_key_masked})` : "— pas encore configurée";
+  $("title").textContent = `${s.name || "Participant"} — participant IA`;
+  $("mcpList").innerHTML = "";
+  (s.mcp_servers || []).forEach(addMcp);
+}
+
+async function save() {
+  const body = { proactivity, web_search: $("web_search").checked, api_key: $("api_key").value, mcp_servers: readMcp() };
+  for (const k of FIELDS) body[k] = $(k).value;
+  $("saveBtn").disabled = true;
+  try {
+    fill(await api("/api/settings", { method: "PUT", body: JSON.stringify(body) }));
+    $("saveMsg").className = "ok";
+    $("saveMsg").textContent = currentState === "in_meeting" ? "Enregistré. Appliqué à la prochaine réunion (quittez puis rejoignez pour l'appliquer maintenant)." : "Enregistré.";
+    if (!$("promptView").hidden) showPrompt();
+  } catch (e) { $("saveMsg").className = "error"; $("saveMsg").textContent = e.message; }
+  $("saveBtn").disabled = false;
+}
+$("saveBtn").onclick = save;
+$("addMcp").onclick = () => addMcp();
+
+async function showPrompt() {
+  const p = await api("/api/prompt");
+  $("promptView").hidden = false;
+  $("promptView").textContent = p.instructions + "\n\n——— prompt du modèle de réflexion ———\n\n" + p.backend_instructions;
+}
+$("showPrompt").onclick = showPrompt;
+
+// ------------------------------------------------------------------ réunion
+let currentState = "idle";
+const LABELS = { idle: "en attente", joining: "connexion…", in_meeting: "en réunion", error: "erreur" };
+async function refreshStatus() {
+  try {
+    const s = await api("/api/status");
+    currentState = s.state;
+    $("pill").className = `pill ${s.state}`;
+    $("pill").textContent = LABELS[s.state] || s.state;
+    $("leaveBtn").disabled = !(s.state === "in_meeting" || s.state === "joining");
+    const line = $("statusLine");
+    line.className = "status-line" + (s.state === "error" ? " error" : "");
+    if (s.state === "error") line.textContent = s.error || "erreur";
+    else if (s.meeting_url) line.textContent = `Dans ${s.meeting_url}` + (s.since ? ` depuis ${new Date(s.since).toLocaleTimeString()}` : "");
+    else line.textContent = "";
+    if (JSON.stringify(s.mcp) !== JSON.stringify(mcpStatus)) { mcpStatus = s.mcp || []; renderMcpStatus(); }
+  } catch (e) { $("statusLine").className = "status-line error"; $("statusLine").textContent = e.message; }
+}
+$("joinBtn").onclick = async () => {
+  try { await api("/api/join", { method: "POST", body: JSON.stringify({ url: $("meetingUrl").value }) }); refreshStatus(); }
+  catch (e) { $("statusLine").className = "status-line error"; $("statusLine").textContent = e.message; }
+};
+$("leaveBtn").onclick = async () => { await api("/api/leave", { method: "POST" }).catch(() => {}); refreshStatus(); };
+
+// ------------------------------------------------------------------ journal
+function logLine(raw) {
+  let e; try { e = JSON.parse(raw); } catch { e = { t: Date.now(), level: "info", msg: raw }; }
+  const div = document.createElement("div");
+  div.className = e.level;
+  const time = document.createElement("time");
+  time.textContent = new Date(e.t).toLocaleTimeString();
+  div.append(time, e.msg);
+  const log = $("log");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.append(div);
+  while (log.childElementCount > 500) log.firstChild.remove();
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+function openLog() {
+  $("log").innerHTML = "";
+  const es = new EventSource(`/api/logs?token=${encodeURIComponent(token)}`);
+  es.onmessage = (m) => logLine(m.data);
+  es.onerror = () => { es.close(); setTimeout(openLog, 3000); };
+}
+
+api("/api/settings").then(fill).catch((e) => { $("saveMsg").className = "error"; $("saveMsg").textContent = e.message; });
+refreshStatus(); setInterval(refreshStatus, 2000);
+openLog();
+</script>
+</body>
+</html>

@@ -37,7 +37,13 @@ RUN mkdir -p -m 1777 /tmp/.X11-unix
 ENV XDG_RUNTIME_DIR=/tmp/fdm-runtime \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/fdm-runtime/bus \
     DISPLAY=:99 \
-    FDM_BROWSER_PROFILE=/home/pwuser/profile
+    FDM_BROWSER_PROFILE=/home/pwuser/profile \
+    FDM_DATA_DIR=/home/pwuser/data \
+    FDM_UI_ADDR=0.0.0.0:8080
+RUN mkdir -p /home/pwuser/profile /home/pwuser/data && chown -R pwuser /home/pwuser
 USER pwuser
 WORKDIR /home/pwuser
+EXPOSE 8080 5900
 ENTRYPOINT ["fdm-entrypoint"]
+# Par défaut : l'interface web ; le bot attend qu'on lui donne un lien de réunion.
+CMD ["--serve"]

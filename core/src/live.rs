@@ -21,8 +21,14 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
 use tracing::{debug, info, warn};
 
+use std::collections::{HashMap, HashSet};
+
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+
 use crate::audio::{self, Audio, Uplink};
 use crate::config::Config;
+use crate::mcp::SharedHub;
 
 /// Un fragment de transcription après un tel blanc commence une nouvelle prise de parole
 /// (l'API n'envoie pas de fin de tour).
@@ -31,7 +37,7 @@ const TURN_GAP: Duration = Duration::from_millis(1200);
 const HISTORY_CHARS: usize = 20_000;
 const HISTORY_ITEMS: usize = 120; // l'API en accepte 128 au plus
 
-pub fn session_config(cfg: &Config, history: &[(String, String)]) -> Value {
+pub fn session_config(cfg: &Config, history: &[(String, String)], mcp_tools: &[Value]) -> Value {
     let mut session = json!({
         "model": cfg.model,
         "instructions": cfg.instructions(),
@@ -41,15 +47,17 @@ pub fn session_config(cfg: &Config, history: &[(String, String)]) -> Value {
         },
     });
     session["delegation"] = if cfg.delegation == "responses" {
-        json!({
-            "type": "responses",
-            "responses": {
-                "model": cfg.backend_model,
-                "instructions": cfg.backend_instructions(),
-                "tools": [{"type": "web_search"}],
-                "tool_choice": "auto"
-            }
-        })
+        // Les outils du backend sont fixés à l'ouverture de la session : tout est déclaré d'emblée.
+        let mut tools: Vec<Value> = mcp_tools.to_vec();
+        if !cfg.no_web_search {
+            tools.push(json!({"type": "web_search"}));
+        }
+        let mut responses = json!({"model": cfg.backend_model, "instructions": cfg.backend_instructions()});
+        if !tools.is_empty() {
+            responses["tools"] = Value::Array(tools);
+            responses["tool_choice"] = json!("auto");
+        }
+        json!({"type": "responses", "responses": responses})
     } else {
         json!({"type": "client"})
     };
@@ -126,12 +134,18 @@ impl Transcript {
 }
 
 /// Boucle principale ; recrée une session (avec l'historique de la réunion) si elle se ferme.
-pub async fn run(cfg: &Config, mut audio: Audio) -> Result<()> {
+/// S'arrête proprement quand `cancel` est déclenché.
+pub async fn run(cfg: &Config, audio: &mut Audio, hub: SharedHub, cancel: CancellationToken) -> Result<()> {
     let mut transcript = Transcript::default();
     let mut uplink = Uplink::default();
     let mut failures = 0u32;
+    // Le son accumulé avant la session (bot en attente) est périmé.
+    while audio.capture.try_recv().is_ok() {}
     loop {
-        match session(cfg, &mut audio, &mut transcript, &mut uplink).await {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        match session(cfg, audio, &mut transcript, &mut uplink, &hub, &cancel).await {
             Ok(None) => return Ok(()), // Ctrl+C / SIGTERM
             Ok(Some(reason)) if reason == "close_requested" => return Ok(()),
             Ok(Some(reason)) => {
@@ -144,7 +158,10 @@ pub async fn run(cfg: &Config, mut audio: Audio) -> Result<()> {
                     return Err(e);
                 }
                 warn!("Session interrompue : {e:#} — nouvel essai dans {failures} s");
-                tokio::time::sleep(Duration::from_secs(failures as u64)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(failures as u64)) => {}
+                    _ = cancel.cancelled() => return Ok(()),
+                }
             }
         }
     }
@@ -156,13 +173,15 @@ async fn session(
     audio: &mut Audio,
     transcript: &mut Transcript,
     uplink: &mut Uplink,
+    hub: &SharedHub,
+    cancel: &CancellationToken,
 ) -> Result<Option<String>> {
     let url = format!("{}/live/sessions", cfg.api_base.trim_end_matches('/'));
     let mut req = url.as_str().into_client_request()?;
     req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.api_key).parse()?);
     let (ws, _) = tokio_tungstenite::connect_async(req).await.context("connexion à l'API GPT-Live")?;
     let (mut tx, mut rx) = ws.split();
-    let start = json!({"type": "session.start", "session": session_config(cfg, &transcript.history())});
+    let start = json!({"type": "session.start", "session": session_config(cfg, &transcript.history(), &hub.tools())});
     tx.send(Message::text(start.to_string())).await?;
     info!("🌐 Connecté ({}, voix {}, délégation {})", cfg.model, cfg.voice, cfg.delegation);
 
@@ -170,6 +189,8 @@ async fn session(
     let mut ticker = tokio::time::interval(Duration::from_millis(audio::UPLINK_MS));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let playback = audio.playback.clone();
+    let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<Internal>();
+    let mut calls: HashMap<String, CallGroup> = HashMap::new();
 
     loop {
         let mut outgoing: Vec<Value> = vec![];
@@ -187,6 +208,23 @@ async fn session(
                     log_turn(cfg, &role, &text);
                 }
             }
+
+            Some(internal) = internal_rx.recv() => match internal {
+                Internal::ToolResult { delegation, call_id, output } => {
+                    outgoing.push(json!({
+                        "type": "response.item.create",
+                        "item": {"type": "function_call_output", "call_id": call_id, "output": output}
+                    }));
+                    if let Some(g) = calls.get_mut(&delegation) { g.open.remove(&call_id); }
+                    outgoing.extend(maybe_continue(&mut calls, &delegation, &internal_tx));
+                }
+                Internal::Grace { delegation, count } => {
+                    if let Some(g) = calls.get_mut(&delegation) {
+                        if g.count == count && g.open.is_empty() { g.done = true; }
+                    }
+                    outgoing.extend(maybe_continue(&mut calls, &delegation, &internal_tx));
+                }
+            },
 
             msg = rx.next() => {
                 let Some(msg) = msg else { bail!("connexion fermée") };
@@ -230,6 +268,34 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                             }));
                         }
                     }
+                    // Événements du backend (délégation responses) : appels d'outils à exécuter.
+                    "response.event" => {
+                        let delegation = ev["delegation_id"].as_str().unwrap_or("").to_string();
+                        let inner = &ev["event"];
+                        match inner["type"].as_str().unwrap_or("") {
+                            "response.output_item.done" if inner["item"]["type"] == "function_call" => {
+                                let item = &inner["item"];
+                                let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+                                let name = item["name"].as_str().unwrap_or("").to_string();
+                                let args = item["arguments"].as_str().unwrap_or("{}").to_string();
+                                info!("🔧 appel d'outil : {name}");
+                                let g = calls.entry(delegation.clone()).or_default();
+                                g.open.insert(call_id.clone());
+                                g.count += 1;
+                                let (hub, tx) = (hub.clone(), internal_tx.clone());
+                                // Pendant que l'outil travaille, la voix continue la conversation.
+                                tokio::spawn(async move {
+                                    let output = hub.call(&name, &args).await;
+                                    let _ = tx.send(Internal::ToolResult { delegation, call_id, output });
+                                });
+                            }
+                            "response.completed" => {
+                                if let Some(g) = calls.get_mut(&delegation) { g.done = true; }
+                                outgoing.extend(maybe_continue(&mut calls, &delegation, &internal_tx));
+                            }
+                            t => debug!("← response.event/{t}"),
+                        }
+                    }
                     "session.closed" => {
                         if let Some((role, text)) = transcript.flush() { log_turn(cfg, &role, &text); }
                         let reason = ev["reason"].as_str().unwrap_or("?").to_string();
@@ -242,7 +308,7 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                 }
             }
 
-            _ = crate::shutdown::requested() => {
+            _ = cancel.cancelled() => {
                 info!("Au revoir 👋");
                 // Fermeture documentée : on demande, puis on attend `session.closed` (bilan d'usage).
                 let _ = tx.send(Message::text(json!({"type": "session.close"}).to_string())).await;
@@ -267,6 +333,44 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
     }
 }
 
+enum Internal {
+    ToolResult { delegation: String, call_id: String, output: String },
+    Grace { delegation: String, count: usize },
+}
+
+/// Les appels d'outils d'une réponse du backend.
+#[derive(Default)]
+struct CallGroup {
+    open: HashSet<String>,
+    count: usize,
+    /// `response.completed` reçu (plus aucun appel ne viendra)
+    done: bool,
+}
+
+/// Délai d'attente de `response.completed` une fois tous les appels connus servis.
+const CALLS_GRACE: Duration = Duration::from_millis(1500);
+
+/// `response.create` dès que tous les appels ont leur résultat ET que la réponse est complète.
+/// L'API exige les deux : un résultat seul ne relance pas la réponse, et relancer avant d'avoir
+/// tous les résultats d'appels parallèles ferme la session (`function_call_outputs_required`).
+fn maybe_continue(calls: &mut HashMap<String, CallGroup>, delegation: &str, tx: &mpsc::UnboundedSender<Internal>) -> Vec<Value> {
+    let Some(g) = calls.get(delegation) else { return vec![] };
+    if g.count == 0 || !g.open.is_empty() {
+        return vec![];
+    }
+    if g.done {
+        calls.remove(delegation);
+        return vec![json!({"type": "response.create"})];
+    }
+    // `response.completed` n'arrive pas toujours sur une réponse en pause : on n'en dépend pas.
+    let (tx, delegation, count) = (tx.clone(), delegation.to_string(), g.count);
+    tokio::spawn(async move {
+        tokio::time::sleep(CALLS_GRACE).await;
+        let _ = tx.send(Internal::Grace { delegation, count });
+    });
+    vec![]
+}
+
 fn log_turn(cfg: &Config, role: &str, text: &str) {
     if role == "assistant" {
         info!("🤖 {} : {text}", cfg.name);
@@ -283,7 +387,11 @@ mod tests {
     #[test]
     fn config_de_session() {
         let cfg = Config::parse_from(["fdm", "--name", "Nova", "--expertise", "expert Rust", "--proactivity", "active"]);
-        let s = session_config(&cfg, &[("user".into(), "Bonjour".into()), ("assistant".into(), "Salut".into())]);
+        let mcp = vec![json!({"type": "function", "name": "agenda__list", "parameters": {"type": "object"}})];
+        let s = session_config(&cfg, &[("user".into(), "Bonjour".into()), ("assistant".into(), "Salut".into())], &mcp);
+        let tools = s["delegation"]["responses"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[1]["type"], "web_search");
         assert_eq!(s["model"], "gpt-live-1");
         assert_eq!(s["audio"]["format"]["rate"], 24000);
         assert_eq!(s["delegation"]["type"], "responses");
@@ -291,6 +399,24 @@ mod tests {
         let instr = s["instructions"].as_str().unwrap();
         assert!(instr.contains("expert Rust") && instr.contains("N'hésite pas à intervenir"));
         assert!(instr.contains("# Interruptions"));
+    }
+
+    #[tokio::test]
+    async fn relance_seulement_quand_tous_les_appels_sont_servis() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut calls: HashMap<String, CallGroup> = HashMap::new();
+        let g = calls.entry("d1".into()).or_default();
+        g.open.extend(["a".to_string(), "b".to_string()]);
+        g.count = 2;
+        calls.get_mut("d1").unwrap().open.remove("a");
+        assert!(maybe_continue(&mut calls, "d1", &tx).is_empty()); // « b » attend encore
+        calls.get_mut("d1").unwrap().open.remove("b");
+        assert!(maybe_continue(&mut calls, "d1", &tx).is_empty()); // pas encore complete : délai de grâce
+        let Some(Internal::Grace { delegation, count }) = rx.recv().await else { panic!() };
+        assert_eq!((delegation.as_str(), count), ("d1", 2));
+        calls.get_mut("d1").unwrap().done = true;
+        assert_eq!(maybe_continue(&mut calls, "d1", &tx), vec![json!({"type": "response.create"})]);
+        assert!(calls.is_empty());
     }
 
     #[test]

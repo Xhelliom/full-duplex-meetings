@@ -1,22 +1,32 @@
 mod audio;
 mod config;
 mod live;
+mod logs;
+mod mcp;
+mod server;
+mod settings;
 mod shutdown;
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Layer;
+use tracing_subscriber::util::SubscriberInitExt;
 
 use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "fdm=info".into()),
-        )
-        .with_target(false)
+    let logs = logs::LogHub::new();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "fdm=info".into());
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_target(false).with_filter(filter))
+        .with(logs.clone())
         .init();
     let cfg = Config::parse();
 
@@ -27,7 +37,12 @@ async fn main() -> Result<()> {
         audio::AI_MIC
     );
 
-    // Le navigateur du bot (Python/Playwright) : processus enfant, tué quand fdm s'arrête.
+    // Mode service : interface web, le bot attend qu'on lui donne un lien.
+    if cfg.serve {
+        return server::serve(cfg, audio, logs).await;
+    }
+
+    // Mode ligne de commande : une réunion (--join), puis on s'arrête.
     let mut joiner = match &cfg.join {
         Some(url) => {
             info!("🚪 Lancement de « {} » pour rejoindre la réunion…", cfg.join_cmd);
@@ -49,10 +64,19 @@ async fn main() -> Result<()> {
 
     let result = if cfg.echo_test {
         echo_test(audio).await
-    } else if cfg.api_key.is_empty() {
-        Err(anyhow::anyhow!("OPENAI_API_KEY manquant (fichier .env ou variable d'environnement)"))
     } else {
-        live::run(&cfg, audio).await
+        let settings = settings::Settings::load(&cfg)?;
+        let cfg = settings.apply(&cfg);
+        anyhow::ensure!(!cfg.api_key.is_empty(), "OPENAI_API_KEY manquant");
+        let hub = Arc::new(mcp::McpHub::connect_all(&cfg.mcp_servers).await);
+        let cancel = CancellationToken::new();
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            shutdown::requested().await;
+            c.cancel();
+        });
+        let mut audio = audio;
+        live::run(&cfg, &mut audio, hub, cancel).await
     };
 
     // Laisser le navigateur quitter la réunion proprement avant de tout couper.

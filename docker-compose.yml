@@ -1,17 +1,22 @@
-# docker compose run --rm bot                     (lien dans .env : FDM_JOIN=…)
-# FDM_JOIN="https://teams.microsoft.com/l/…" docker compose run --rm bot
+# docker compose up -d   puis   http://localhost:8080
+# (réglages, clé API, consignes, outils MCP, lien de réunion : tout se fait dans l'interface)
 services:
   bot:
     build: .
-    env_file: .env
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
     environment:
-      FDM_JOIN: ${FDM_JOIN:-}
       FDM_VNC: ${FDM_VNC:-1}
     ports:
-      - "127.0.0.1:5900:5900"   # VNC : voir l'écran du bot, l'admettre, se connecter à son compte
+      - "127.0.0.1:8080:8080"   # interface web
+      - "127.0.0.1:5900:5900"   # VNC : voir l'écran du bot, l'admettre, connecter son compte
     volumes:
-      - bot-profile:/home/pwuser/profile
-    shm_size: 1gb               # Chromium en a besoin
+      - bot-data:/home/pwuser/data         # réglages (clé API comprise)
+      - bot-profile:/home/pwuser/profile   # profil du navigateur (compte du bot)
+    shm_size: 1gb                          # Chromium en a besoin
     init: true
 volumes:
+  bot-data:
   bot-profile:

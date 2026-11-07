@@ -25,3 +25,4 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"

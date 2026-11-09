@@ -73,6 +73,8 @@ struct Connected {
     server: String,
     service: RunningService<RoleClient, ()>,
     confirm: bool,
+    /// Ce que contient le serveur, en mots simples (« l'historique du support »)
+    description: String,
 }
 
 /// Une confirmation demandée reste valable ce temps-là.
@@ -263,7 +265,7 @@ impl McpHub {
                         on_demand: deferred,
                         error: None,
                     });
-                    hub.servers.push(Connected { server: s.name.clone(), service, confirm: s.confirm });
+                    hub.servers.push(Connected { server: s.name.clone(), service, confirm: s.confirm, description: s.description.clone() });
                 }
                 Err(e) => {
                     warn!("🔌 MCP « {} » indisponible : {e:#}", s.name);
@@ -412,6 +414,28 @@ paramètres. Serveurs : {catalogue}. Ensuite, appelle l'outil choisi avec `{USE_
     }
 
     /// Un participant vient de parler (sert à valider une confirmation demandée avant).
+    /// Ce que fait un appel, en mots simples, pour dire en réunion ce qu'il est en train de consulter.
+    pub fn activity(&self, function: &str, arguments: &str) -> String {
+        let function = match function {
+            USE_TOOL => parse_args(arguments)["nom"].as_str().unwrap_or("").to_string(),
+            FIND_TOOLS => return "il cherche le bon outil".into(),
+            f => f.to_string(),
+        };
+        let server = match self.routes.get(&function) {
+            Some((idx, _)) => self.servers.get(*idx),
+            None => self
+                .deferred
+                .iter()
+                .find(|d| d.function == function)
+                .and_then(|d| self.servers.iter().find(|c| c.server == d.server)),
+        };
+        match server {
+            Some(c) if !c.description.trim().is_empty() => format!("il consulte {}", c.description.trim()),
+            Some(c) => format!("il consulte la source « {} »", c.server),
+            None => format!("il utilise l'outil {function}"),
+        }
+    }
+
     pub fn user_spoke(&self) {
         *self.last_speech.lock().unwrap() = Some(Instant::now());
     }

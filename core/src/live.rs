@@ -41,6 +41,37 @@ pub const LEAVE_TOOL: &str = "quitter_reunion";
 /// Le temps de dire au revoir avant de partir.
 const LEAVE_DELAY: Duration = Duration::from_secs(8);
 
+/// Une réflexion déléguée qui dure plus que ça : il dit une fois où il en est, au lieu d'un long blanc.
+const PROGRESS_AFTER: Duration = Duration::from_secs(8);
+/// Au-delà, on n'attend plus la fin de cette délégation (événement de fin manqué).
+const PROGRESS_GIVE_UP: Duration = Duration::from_secs(120);
+/// Il ne coupe pas quelqu'un qui parle : silence de la réunion exigé avant de relancer.
+const PROGRESS_QUIET: Duration = Duration::from_millis(1500);
+
+/// Une délégation au backend en cours, vue de la réunion.
+struct Thinking {
+    since: Instant,
+    /// Ce qu'il consulte (« il consulte l'historique du support »…), dans l'ordre
+    activities: Vec<String>,
+    /// Appels d'outils dans la réponse courante du backend (0 à la fin = réponse finale)
+    calls_in_response: usize,
+    told: bool,
+}
+
+/// Consigne pour annoncer, en une phrase, que la recherche est encore en cours.
+fn progress_commentary(activities: &[String]) -> String {
+    let doing = match activities.last() {
+        Some(a) => format!(" En ce moment, {a}."),
+        None => String::new(),
+    };
+    format!(
+        "La recherche que tu as lancée prend un peu plus de temps que prévu.{doing} Dis-le en une seule phrase \
+courte et naturelle, comme un collègue qui fouille encore (« je cherche encore dans l'historique des tickets, \
+deux secondes »), sans jargon technique ni nom d'outil, sans donner de résultat et sans poser de question. Puis \
+tais-toi jusqu'à la réponse."
+    )
+}
+
 fn leave_tool() -> Value {
     json!({
         "type": "function",
@@ -208,6 +239,8 @@ async fn session(
     let (internal_tx, mut internal_rx) = mpsc::unbounded_channel::<Internal>();
     let mut calls: HashMap<String, CallGroup> = HashMap::new();
     let mut last_backlog_check = Instant::now();
+    let mut thinking: HashMap<String, Thinking> = HashMap::new();
+    let mut last_heard = Instant::now();
 
     loop {
         let mut outgoing: Vec<Value> = vec![];
@@ -223,6 +256,19 @@ async fn session(
                 }
                 if let Some((role, text)) = transcript.flush_if_stale(Instant::now()) {
                     log_turn(cfg, &role, &text);
+                }
+                thinking.retain(|_, t| t.since.elapsed() < PROGRESS_GIVE_UP);
+                // Personne ne parle, lui non plus : une longue recherche mérite un mot.
+                if started && last_heard.elapsed() >= PROGRESS_QUIET && playback.backlog_ms() < 100 {
+                    if let Some(t) = thinking.values_mut().find(|t| !t.told && t.since.elapsed() >= PROGRESS_AFTER) {
+                        t.told = true;
+                        info!("⏳ la réflexion dure : il le dit ({})", t.activities.last().map_or("réflexion", |a| a));
+                        outgoing.push(json!({
+                            "type": "session.commentary.append",
+                            "delegation_id": null,
+                            "content": progress_commentary(&t.activities),
+                        }));
+                    }
                 }
                 if last_backlog_check.elapsed() >= Duration::from_secs(5) {
                     last_backlog_check = Instant::now();
@@ -269,6 +315,7 @@ async fn session(
                     }
                     "session.input_transcript.delta" => {
                         hub.user_spoke();
+                        last_heard = now;
                         if let Some((role, text)) = transcript.push("user", ev["delta"].as_str().unwrap_or(""), now) {
                             log_turn(cfg, &role, &text);
                         }
@@ -285,6 +332,10 @@ async fn session(
                     "session.delegation.created" => {
                         let target = ev["delegation"]["target"].as_str().unwrap_or("");
                         info!("🧠 il réfléchit (délégation {target})");
+                        if target == "responses" {
+                            let id = ev["delegation"]["id"].as_str().unwrap_or("").to_string();
+                            thinking.insert(id, Thinking { since: now, activities: vec![], calls_in_response: 0, told: false });
+                        }
                         if target == "client" {
                             // Pas de cerveau côté client pour l'instant : sans réponse, il attendrait.
                             outgoing.push(json!({
@@ -309,7 +360,12 @@ sais, ou dis simplement que tu ne peux pas le vérifier maintenant."
                                 let g = calls.entry(delegation.clone()).or_default();
                                 g.open.insert(call_id.clone());
                                 g.count += 1;
+                                if let Some(t) = thinking.get_mut(&delegation) {
+                                    t.calls_in_response += 1;
+                                    t.activities.push(hub.activity(&name, &args));
+                                }
                                 if name == LEAVE_TOOL {
+                                    thinking.remove(&delegation); // il prend congé, pas de « je cherche encore »
                                     info!("👋 On lui demande de quitter la réunion : il part dans {} s", LEAVE_DELAY.as_secs());
                                     let output = "C'est fait : tu quittes la réunion dans quelques secondes. Si tu as déjà pris congé, ne dis \
 plus rien ; sinon, prends congé en une phrase courte (« Je vous laisse, à bientôt ! »).".to_string();
@@ -328,7 +384,23 @@ plus rien ; sinon, prends congé en une phrase courte (« Je vous laisse, à bie
                                     let _ = tx.send(Internal::ToolResult { delegation, call_id, output });
                                 });
                             }
+                            "response.output_item.added" if inner["item"]["type"] == "web_search_call" => {
+                                if let Some(t) = thinking.get_mut(&delegation) {
+                                    t.activities.push("il fait une recherche sur le web".into());
+                                }
+                            }
+                            // Nouvelle étape du backend (après des résultats d'outils).
+                            "response.created" => {
+                                if let Some(t) = thinking.get_mut(&delegation) { t.calls_in_response = 0; }
+                            }
+                            // La réponse s'écrit : la voix va bientôt la dire.
+                            "response.output_text.delta" => {
+                                thinking.remove(&delegation);
+                            }
                             "response.completed" => {
+                                if thinking.get(&delegation).is_some_and(|t| t.calls_in_response == 0) {
+                                    thinking.remove(&delegation);
+                                }
                                 if let Some(g) = calls.get_mut(&delegation) { g.done = true; }
                                 outgoing.extend(maybe_continue(&mut calls, &delegation, &internal_tx));
                             }
@@ -422,6 +494,14 @@ fn log_turn(cfg: &Config, role: &str, text: &str) {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn relance_d_attente() {
+        let c = progress_commentary(&["il consulte l'historique du support".into()]);
+        assert!(c.contains("En ce moment, il consulte l'historique du support."));
+        assert!(c.contains("une seule phrase"));
+        assert!(!progress_commentary(&[]).contains("En ce moment"));
+    }
 
     #[test]
     fn config_de_session() {

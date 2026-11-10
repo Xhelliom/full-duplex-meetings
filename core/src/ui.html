@@ -190,6 +190,10 @@
     <div class="seg" id="proactivity">
       <button data-v="reserve">Réservé</button><button data-v="normal">Normal</button><button data-v="active">Actif</button>
     </div>
+    <label>Débit de parole <small>— une consigne donnée à la voix (l'API n'a pas de réglage de vitesse) : l'effet est approximatif</small></label>
+    <div class="seg" id="pace">
+      <button data-v="pose">Posé</button><button data-v="normal">Normal</button><button data-v="rapide">Rapide</button>
+    </div>
     <div class="label-row">
       <label for="behavior">Consignes de comportement <small>— ton, rôle, ce qu'il doit faire ou éviter</small></label>
       <button id="aiBehavior" class="ai small" type="button" title="Notez vos idées en vrac, l'IA en fait des consignes claires">Reformuler avec l'IA</button>
@@ -318,6 +322,12 @@ function setProactivity(v) {
   for (const b of $("proactivity").children) b.classList.toggle("on", b.dataset.v === v);
 }
 for (const b of $("proactivity").children) b.onclick = () => setProactivity(b.dataset.v);
+let pace = "normal";
+function setPace(v) {
+  pace = v;
+  for (const b of $("pace").children) b.classList.toggle("on", b.dataset.v === v);
+}
+for (const b of $("pace").children) b.onclick = () => setPace(b.dataset.v);
 
 const lines = (t) => t.split("\n").map((s) => s.trim()).filter(Boolean);
 function toMap(text, sep) {
@@ -395,6 +405,7 @@ function fill(s) {
   if (s.voice && ![...$("voice").options].some((o) => o.value === s.voice)) $("voice").add(new Option(s.voice, s.voice));
   for (const k of FIELDS) $(k).value = s[k] ?? "";
   setProactivity(s.proactivity || "normal");
+  setPace(s.pace || "normal");
   $("web_search").checked = !!s.web_search;
   $("api_key").value = "";
   $("keyState").textContent = s.api_key_set ? `— configurée (${s.api_key_masked})` : "— pas encore configurée";
@@ -404,7 +415,7 @@ function fill(s) {
 }
 
 function formBody() {
-  const body = { proactivity, web_search: $("web_search").checked, api_key: $("api_key").value, mcp_servers: readMcp() };
+  const body = { proactivity, pace, web_search: $("web_search").checked, api_key: $("api_key").value, mcp_servers: readMcp() };
   for (const k of FIELDS) body[k] = $(k).value;
   return body;
 }

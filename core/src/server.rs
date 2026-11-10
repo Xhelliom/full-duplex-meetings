@@ -334,6 +334,12 @@ async fn put_settings(State(app): State<Arc<App>>, Json(mut new): Json<Settings>
     if !["reserve", "normal", "active"].contains(&new.proactivity.as_str()) {
         return bad("proactivité : reserve, normal ou active");
     }
+    if new.pace.is_empty() {
+        new.pace = "normal".into(); // interface d'avant ce réglage
+    }
+    if !["pose", "normal", "rapide"].contains(&new.pace.as_str()) {
+        return bad("débit : pose, normal ou rapide");
+    }
     if !["responses", "client"].contains(&new.delegation.as_str()) {
         return bad("délégation : responses ou client");
     }

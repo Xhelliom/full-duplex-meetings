@@ -18,6 +18,7 @@ pub struct Settings {
     pub language: String,
     pub expertise: String,
     pub proactivity: String,
+    pub pace: String,
     pub behavior: String,
     pub context: String,
     pub system_prompt: String,
@@ -41,6 +42,7 @@ impl Settings {
             language: cfg.language.clone(),
             expertise: cfg.expertise.clone(),
             proactivity: cfg.proactivity.clone(),
+            pace: cfg.pace.clone(),
             behavior: cfg.behavior.clone(),
             context: cfg.context.clone(),
             system_prompt: cfg.system_prompt.clone(),
@@ -78,6 +80,7 @@ impl Settings {
         fill(&mut self.voice, &cfg.voice);
         fill(&mut self.language, &cfg.language);
         fill(&mut self.proactivity, &cfg.proactivity);
+        fill(&mut self.pace, &cfg.pace);
         fill(&mut self.model, &cfg.model);
         fill(&mut self.delegation, &cfg.delegation);
         fill(&mut self.backend_model, &cfg.backend_model);
@@ -109,6 +112,7 @@ impl Settings {
         c.language = self.language.clone();
         c.expertise = self.expertise.clone();
         c.proactivity = self.proactivity.clone();
+        c.pace = self.pace.clone();
         c.behavior = self.behavior.clone();
         c.context = self.context.clone();
         c.system_prompt = self.system_prompt.clone();
@@ -154,6 +158,16 @@ mod tests {
         assert!(eff.instructions().contains("Tutoie tout le monde."));
         assert!(eff.instructions().contains("Tu es Iris"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn debit_de_parole() {
+        let mut cfg = Config::parse_from(["fdm"]);
+        assert!(!cfg.instructions().contains("débit soutenu"));
+        cfg.pace = "rapide".into();
+        assert!(cfg.instructions().contains("Parle français. Parle avec un débit soutenu"));
+        cfg.system_prompt = "Tu es {name}.".into();
+        assert!(cfg.instructions().contains("# Débit\nParle avec un débit soutenu"));
     }
 
     #[test]

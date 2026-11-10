@@ -62,6 +62,10 @@ pub struct Config {
     #[arg(long, env = "FDM_PROACTIVITY", default_value = "normal", value_parser = ["reserve", "normal", "active"])]
     pub proactivity: String,
 
+    /// Débit de parole : pose, normal, rapide (gpt-live n'a pas de réglage de vitesse : c'est une consigne)
+    #[arg(long, env = "FDM_PACE", default_value = "normal", value_parser = ["pose", "normal", "rapide"])]
+    pub pace: String,
+
     /// Contexte de la réunion : ordre du jour, participants…
     #[arg(long, env = "FDM_CONTEXT", default_value = "")]
     pub context: String,
@@ -108,6 +112,16 @@ le seul moyen de partir. Ne l'annonce pas comme une tâche (pas de « je m'en oc
 collègue qui quitte une réunion, en une phrase, par exemple « Pas de souci, je vous laisse. À bientôt ! ».";
 
 impl Config {
+    /// Consigne de débit (vide pour « normal ») : l'API n'offre aucun paramètre de vitesse.
+    fn pace_hint(&self) -> &'static str {
+        match self.pace.as_str() {
+            "pose" => "Parle à un rythme posé et calme, en articulant et en laissant respirer tes phrases.",
+            "rapide" => "Parle avec un débit soutenu et vif, sans paraître pressé : enchaîne tes phrases sans \
+traîner ni marquer de longues pauses, sans rien changer à ce que tu dis.",
+            _ => "",
+        }
+    }
+
     fn leave_hint(&self) -> &'static str {
         if self.delegation == "responses" {
             LEAVE_HINT
@@ -125,6 +139,10 @@ impl Config {
             if !self.leave_hint().is_empty() && !s.contains(self.leave_hint().trim()) {
                 s.push_str("\n\n# Quitter la réunion\n");
                 s.push_str(self.leave_hint().trim());
+            }
+            if !self.pace_hint().is_empty() {
+                s.push_str("\n\n# Débit\n");
+                s.push_str(self.pace_hint());
             }
             // Les consignes restent un réglage à part, ajouté à la fin : les modifier plus tard
             // s'applique aussi à un prompt complet.
@@ -173,7 +191,7 @@ conversation. Dans le doute, tais-toi.
 # Comment parler
 C'est de l'oral : phrases naturelles, sans listes ni formules creuses. La longueur dépend de la demande, sans limite : \
 une phrase pour une question simple, plusieurs minutes si on te demande d'expliquer. Appelle les gens par leur \
-prénom quand tu le connais. Parle {lang}.
+prénom quand tu le connais. Parle {lang}.{pace}
 Quand tu as fini ton propos, arrête-toi, sans relancer par réflexe : pas de « et toi ? » ni de « tu en penses \
 quoi ? » en fin de réponse. En réunion, on ne pose une question que quand on a vraiment besoin de la réponse.
 
@@ -190,6 +208,7 @@ Pour un fait à vérifier, un calcul, une recherche ou une réflexion longue, d�
 la réponse arrive, enchaîne directement sur le fond, comme si tu reprenais ta phrase : tu as déjà dit que tu \
 regardais, ne redis pas « oui » ni « bien sûr ».{leave}",
             leave = self.leave_hint(),
+            pace = if self.pace_hint().is_empty() { String::new() } else { format!(" {}", self.pace_hint()) },
             name = self.name,
             lang = self.language,
         );

@@ -220,42 +220,67 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
 
 /** Raccroche vraiment : sans ça, fermer le navigateur laisse un participant « fantôme » dans la
  * réunion jusqu'à expiration côté Teams. La barre d'outils est souvent masquée : on bouge la souris
- * pour la faire revenir, et on clique le bouton même s'il est encore caché. */
+ * pour la faire revenir. Chaque tentative est vérifiée (les contrôles d'appel doivent disparaître ou
+ * Teams doit afficher « vous avez quitté ») : un clic sur un bouton caché peut ne rien faire. */
 export async function leaveTeams(page: Page, log: (m: string) => void): Promise<void> {
   if (page.isClosed()) return;
-  await page.mouse.move(600, 380).catch(() => {});
-  await page.mouse.move(640, 420).catch(() => {});
-  for (const loc of [page.locator('[data-tid="hangup-main-btn"], #hangup-button'), page.getByRole("button", { name: LEAVE, includeHidden: true })]) {
-    const button = loc.first();
-    if ((await button.count().catch(() => 0)) === 0) continue;
-    try {
-      await button.click({ force: true, timeout: 3_000 });
-      await sleep(1_500); // le temps que Teams prévienne les autres participants
-      log("raccroché");
-      return;
-    } catch {
-      /* bouton suivant */
+  const left = async (ms: number): Promise<boolean> => {
+    const until = Date.now() + ms;
+    while (Date.now() < until) {
+      if (page.isClosed()) return true;
+      if (!(await callControlsPresent(page))) return true;
+      if (await page.getByText(ENDED).first().isVisible().catch(() => false)) return true;
+      await sleep(300);
+    }
+    return false;
+  };
+  const showToolbar = async () => {
+    await page.mouse.move(600, 380).catch(() => {});
+    await page.mouse.move(640, 420).catch(() => {});
+    await sleep(300);
+  };
+  const hangup = () => page.locator('[data-tid="hangup-main-btn"], #hangup-button').or(page.getByRole("button", { name: LEAVE, includeHidden: true })).first();
+
+  if (await callControlsPresent(page)) {
+    const attempts: [string, () => Promise<unknown>][] = [
+      ["clic sur Raccrocher", async () => { await showToolbar(); await hangup().click({ timeout: 3_000 }); }],
+      ["clic forcé sur Raccrocher", async () => { await showToolbar(); await hangup().click({ force: true, timeout: 3_000 }); }],
+      ["raccourci Ctrl+Maj+H", () => page.keyboard.press("Control+Shift+H")],
+    ];
+    for (const [how, act] of attempts) {
+      try {
+        await act();
+      } catch {
+        continue;
+      }
+      if (await left(6_000)) {
+        log(`raccroché (${how})`);
+        await sleep(1_500); // le temps que Teams prévienne les autres participants
+        return;
+      }
+      log(`${how} : toujours dans l'appel, autre méthode`);
+    }
+    const labels = await page
+      .locator("button")
+      .evaluateAll((els) => els.map((e) => (e.getAttribute("aria-label") || e.textContent || "").trim()).filter(Boolean).slice(0, 30))
+      .catch(() => [] as string[]);
+    log(`⚠️ impossible de raccrocher proprement : fermeture de la page. Boutons de la page : ${labels.join(" | ") || "aucun"}`);
+  } else {
+    // Encore dans la salle d'attente : on annule la demande, sinon l'organisateur la voit toujours.
+    const cancel = page.getByRole("button", { name: /^\s*(annuler|cancel)\s*$/i, includeHidden: true }).first();
+    if ((await cancel.count().catch(() => 0)) > 0) {
+      try {
+        await cancel.click({ force: true, timeout: 3_000 });
+        await sleep(1_500);
+        log("demande d'entrée annulée (il était en salle d'attente)");
+        return;
+      } catch {
+        /* fermeture de la page ci-dessous */
+      }
     }
   }
-  // Encore dans la salle d'attente : on annule la demande, sinon l'organisateur la voit toujours.
-  const cancel = page.getByRole("button", { name: /^\s*(annuler|cancel)\s*$/i, includeHidden: true }).first();
-  if ((await cancel.count().catch(() => 0)) > 0) {
-    try {
-      await cancel.click({ force: true, timeout: 3_000 });
-      await sleep(1_500);
-      log("demande d'entrée annulée (il était en salle d'attente)");
-      return;
-    } catch {
-      /* rien à faire de plus */
-    }
-  }
-  // Dernier recours : le raccourci clavier de Teams pour raccrocher. Et les boutons présents dans
-  // la page, pour corriger la recherche si Teams a renommé le sien.
-  const labels = await page
-    .locator("button")
-    .evaluateAll((els) => els.map((e) => (e.getAttribute("aria-label") || e.textContent || "").trim()).filter(Boolean).slice(0, 30))
-    .catch(() => [] as string[]);
-  await page.keyboard.press("Control+Shift+H").catch(() => {});
-  await sleep(1_500);
-  log(`pas de bouton pour raccrocher ni annuler : raccourci Ctrl+Maj+H envoyé. Boutons de la page : ${labels.join(" | ") || "aucun"}`);
+  // Dernier recours : fermer la page en laissant Teams exécuter ses gestionnaires de départ
+  // (beforeunload/pagehide), qui préviennent le serveur.
+  await page.close({ runBeforeUnload: true }).catch(() => {});
+  await sleep(2_000);
 }

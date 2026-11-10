@@ -33,6 +33,9 @@ use crate::settings::Settings;
 use crate::{assist, live, shutdown};
 
 const UI: &str = include_str!("ui.html");
+/// Le navigateur du bot raccroche avant de s'arrêter, en vérifiant chaque tentative (jusqu'à ~30 s) :
+/// l'arrêter plus tôt laisserait un participant « fantôme » dans la réunion.
+const JOINER_GRACE: Duration = Duration::from_secs(40);
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Status {
@@ -171,7 +174,7 @@ async fn controller(app: Arc<App>, audio: Audio, mut rx: mpsc::Receiver<Command>
             Ev::SessionEnded(result) => {
                 if let Some(mut r) = running.take() {
                     if let Some(j) = r.joiner.as_mut() {
-                        shutdown::terminate(j, Duration::from_secs(5)).await;
+                        shutdown::terminate(j, JOINER_GRACE).await;
                     }
                     let err = result.err().map(|e| format!("{e:#}"));
                     if let Some(e) = &err {
@@ -282,7 +285,7 @@ async fn stop_meeting(app: &Arc<App>, mut r: Running, why: &str) {
         r.session.abort();
     }
     if let Some(j) = r.joiner.as_mut() {
-        shutdown::terminate(j, Duration::from_secs(5)).await;
+        shutdown::terminate(j, JOINER_GRACE).await;
     }
     app.status.send_modify(|s| {
         s.state = "idle".into();

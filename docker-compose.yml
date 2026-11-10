@@ -17,6 +17,7 @@ services:
       - bot-profile:/home/pwuser/profile   # profil du navigateur (compte du bot)
     shm_size: 1gb                          # Chromium en a besoin
     init: true
+    stop_grace_period: 45s               # le temps de raccrocher proprement si on l'arrête en réunion
 volumes:
   bot-data:
   bot-profile:

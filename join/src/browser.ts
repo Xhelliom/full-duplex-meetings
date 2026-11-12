@@ -22,6 +22,7 @@ export async function launchBotBrowser(opts: BrowserOptions): Promise<BrowserCon
       "--use-fake-ui-for-media-stream", // accepte micro/caméra sans boîte de dialogue
       "--autoplay-policy=no-user-gesture-required",
       "--disable-features=HardwareMediaKeyHandling",
+      "--hide-crash-restore-bubble", // conteneur arrêté pendant une réunion : pas de « Restaurer les pages ? »
     ],
     viewport: { width: 1280, height: 800 },
     locale: "fr-FR",

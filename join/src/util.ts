@@ -41,3 +41,14 @@ export interface Driver {
   /** Raccroche vraiment (ou annule la demande d'entrée). */
   leave(page: Page, log: (m: string) => void): Promise<void>;
 }
+
+/** La plateforme refuse l'entrée (navigateur refusé, demande rejetée, lien invalide) : inutile
+ * d'attendre, le bot abandonne la réunion (et la session gpt-live, facturée, avec). */
+export class Refused extends Error {}
+
+/** Texte visible correspondant à `pattern`, ou null. */
+export async function visibleText(page: Page, pattern: RegExp): Promise<string | null> {
+  const el = page.getByText(pattern).first();
+  if (!(await el.isVisible().catch(() => false))) return null;
+  return ((await el.textContent().catch(() => "")) ?? "").trim().slice(0, 160);
+}

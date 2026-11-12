@@ -47,6 +47,7 @@
   .pill.joining { color: var(--warn); border-color: var(--warn); }
   .pill.in_meeting { color: var(--ok); border-color: var(--ok); }
   .pill.error { color: var(--err); border-color: var(--err); }
+  .pill.browsing { color: var(--warn); border-color: var(--warn); }
   .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; border-right: 1px solid var(--line); }
   .seg button:last-child { border-right: 0; }
@@ -129,9 +130,10 @@
         <label class="switch" title="Sinon, l'écran est en lecture seule"><input id="vncControl" type="checkbox"> Contrôler</label>
         <button id="vncFull" type="button" hidden>Plein écran</button>
         <button id="vncToggle" type="button">Afficher</button>
+        <button id="browseBtn" type="button" title="Sans réunion : pour connecter ses comptes Google, Microsoft ou Zoom une fois pour toutes">Ouvrir le navigateur du bot</button>
       </div>
     </div>
-    <p class="hint">Son navigateur, en direct : pour le voir entrer dans la réunion, l'admettre ou cliquer à sa place si Teams a changé. Cochez « Contrôler » pour utiliser la souris et le clavier.</p>
+    <p class="hint">Son navigateur, en direct : pour le voir entrer dans la réunion, l'admettre ou cliquer à sa place si Teams a changé. Cochez « Contrôler » pour utiliser la souris et le clavier. « Ouvrir le navigateur du bot » le lance sans réunion, pour y connecter ses comptes (Google pour Meet, Microsoft, Zoom) : ils restent dans son profil.</p>
     <div id="vncScreen" class="screen" hidden></div>
     <small id="vncMsg" class="aimsg"></small>
   </section>
@@ -447,7 +449,7 @@ $("showPrompt").onclick = showPrompt;
 
 // ------------------------------------------------------------------ réunion
 let currentState = "idle";
-const LABELS = { idle: "en attente", joining: "connexion…", in_meeting: "en réunion", error: "erreur" };
+const LABELS = { idle: "en attente", joining: "connexion…", in_meeting: "en réunion", browsing: "navigateur ouvert", error: "erreur" };
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
@@ -455,6 +457,8 @@ async function refreshStatus() {
     $("pill").className = `pill ${s.state}`;
     $("pill").textContent = LABELS[s.state] || s.state;
     $("leaveBtn").disabled = !(s.state === "in_meeting" || s.state === "joining");
+    $("browseBtn").textContent = s.state === "browsing" ? "Fermer le navigateur" : "Ouvrir le navigateur du bot";
+    $("browseBtn").disabled = s.state === "in_meeting" || s.state === "joining";
     const line = $("statusLine");
     line.className = "status-line" + (s.state === "error" ? " error" : "");
     if (s.state === "error") line.textContent = s.error || "erreur";
@@ -605,6 +609,16 @@ async function vncConnect() {
     else say("vncMsg", "Écran indisponible : VNC désactivé sur le bot (FDM_VNC=0), ou connexion perdue. Réessayez avec « Afficher ».", true);
   });
 }
+$("browseBtn").onclick = async () => {
+  if (currentState === "browsing") await api("/api/leave", { method: "POST" }).catch(() => {});
+  else {
+    await api("/api/browse", { method: "POST" }).catch(() => {});
+    if (!rfb) setTimeout(vncConnect, 1500); // laisser le navigateur s'ouvrir
+    $("vncControl").checked = true;
+    $("vncControl").dispatchEvent(new Event("change"));
+  }
+  refreshStatus();
+};
 $("vncToggle").onclick = () => { if (rfb) rfb.disconnect(); else vncConnect(); };
 $("vncControl").onchange = () => { if (rfb) { rfb.viewOnly = !$("vncControl").checked; if (!rfb.viewOnly) rfb.focus(); } };
 $("vncFull").onclick = () => $("vncScreen").requestFullscreen?.();

@@ -3,7 +3,10 @@
 // cliquer soi-même dans la fenêtre — l'audio du bot est déjà branché.
 import type { Locator, Page } from "playwright";
 
-import { clickFirst, sleep, where as whereOf, type Driver } from "./util.js";
+import { clickFirst, Refused, sleep, visibleText, where as whereOf, type Driver } from "./util.js";
+
+/** Refusé en salle d'attente, ou réunion inaccessible. */
+const DENIED = /denied (you )?access|vous a refusé|refusé (votre|l')accès|ne pouvez pas (participer|rejoindre) (à )?cette réunion|can't join this meeting|no one (let you in|admitted you)|personne ne vous a (admis|fait entrer)/i;
 
 const CONTINUE_IN_BROWSER = /continue on this browser|continuer sur ce navigateur|join on the web|rejoindre sur le web/i;
 const JOIN_NOW = /^\s*(join now|rejoindre maintenant|join|rejoindre)\s*$/i;
@@ -50,8 +53,13 @@ export async function joinTeams(page: Page, url: string, displayName: string, lo
   }
   log("demande envoyée — l'organisateur doit peut-être l'admettre depuis la salle d'attente");
 
-  // 4. Dans l'appel quand les contrôles d'appel apparaissent (même masqués)
-  await waitInCallFor(page, 10 * 60_000);
+  // 4. Dans l'appel quand les contrôles d'appel apparaissent (même masqués) ; refus détecté en route.
+  const deadline = Date.now() + 10 * 60_000;
+  while (Date.now() < deadline && !page.isClosed() && !(await callControlsPresent(page))) {
+    const why = await visibleText(page, DENIED);
+    if (why) throw new Refused(`Teams refuse l'entrée : « ${why} »`);
+    await sleep(2_000);
+  }
   if (page.isClosed()) return false; // arrêt demandé pendant l'attente
   if (await callControlsPresent(page)) {
     log("✅ le bot est dans la réunion");

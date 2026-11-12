@@ -39,7 +39,7 @@ const JOINER_GRACE: Duration = Duration::from_secs(40);
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Status {
-    /// idle | joining | in_meeting | error
+    /// idle | joining | in_meeting | browsing | error
     pub state: String,
     pub meeting_url: Option<String>,
     pub since: Option<u64>,
@@ -49,6 +49,8 @@ pub struct Status {
 
 enum Command {
     Join(String),
+    /// Navigateur du bot seul (sans réunion ni gpt-live), pour y connecter ses comptes
+    Browse,
     Leave,
 }
 
@@ -81,6 +83,7 @@ pub async fn serve(base: Config, audio: Audio, logs: LogHub) -> Result<()> {
         .route("/api/status", get(get_status))
         .route("/api/join", post(join))
         .route("/api/leave", post(leave))
+        .route("/api/browse", post(browse))
         .route("/api/logs", get(logs_sse))
         .route("/api/assist/{kind}", post(assist_route))
         .route("/api/voice/{voice}", get(voice_route))
@@ -114,6 +117,8 @@ struct Running {
     cancel: CancellationToken,
     session: JoinHandle<Result<()>>,
     joiner: Option<Child>,
+    /// Navigateur seul : pas de réunion
+    browsing: bool,
 }
 
 async fn controller(app: Arc<App>, audio: Audio, mut rx: mpsc::Receiver<Command>, stop: CancellationToken) {
@@ -159,6 +164,12 @@ async fn controller(app: Arc<App>, audio: Audio, mut rx: mpsc::Receiver<Command>
                     stop_meeting(&app, r, "nouvelle réunion").await;
                 }
                 running = start_meeting(&app, &audio, url).await;
+            }
+            Ev::Cmd(Some(Command::Browse)) => {
+                if let Some(r) = running.take() {
+                    stop_meeting(&app, r, "ouverture du navigateur seul").await;
+                }
+                running = start_browser(&app);
             }
             Ev::Cmd(Some(Command::Leave)) => {
                 if let Some(r) = running.take() {
@@ -219,7 +230,7 @@ async fn start_meeting(app: &Arc<App>, audio: &Arc<Mutex<Audio>>, url: String) -
     let hub = Arc::new(McpHub::connect_all(&cfg.mcp_servers).await);
     app.status.send_modify(|s| s.mcp = hub.status.clone());
 
-    let joiner = spawn_joiner(&cfg, &url);
+    let joiner = spawn_joiner(&cfg, &[url.as_str(), "--name", cfg.name.as_str()]);
     let cancel = CancellationToken::new();
     let (c, audio) = (cancel.clone(), audio.clone());
     let session = tokio::spawn(async move {
@@ -227,18 +238,37 @@ async fn start_meeting(app: &Arc<App>, audio: &Arc<Mutex<Audio>>, url: String) -
         live::run(&cfg, &mut audio, hub, c).await
     });
     app.status.send_modify(|s| s.state = "in_meeting".into());
-    Some(Running { cancel, session, joiner })
+    Some(Running { cancel, session, joiner, browsing: false })
+}
+
+/// Le navigateur du bot, sans réunion ni session gpt-live : pour connecter ses comptes (Google,
+/// Microsoft, Zoom) une fois pour toutes dans son profil.
+fn start_browser(app: &Arc<App>) -> Option<Running> {
+    let cfg = app.base.clone();
+    info!("🧭 Ouverture du navigateur du bot (sans réunion)");
+    let joiner = spawn_joiner(&cfg, &["--browse"])?;
+    let cancel = CancellationToken::new();
+    let c = cancel.clone();
+    let session = tokio::spawn(async move {
+        c.cancelled().await;
+        Ok(())
+    });
+    app.status.send_modify(|s| {
+        s.state = "browsing".into();
+        s.meeting_url = None;
+        s.since = Some(now_ms());
+        s.error = None;
+    });
+    Some(Running { cancel, session, joiner: Some(joiner), browsing: true })
 }
 
 /// Lance le navigateur du bot ; ses messages arrivent dans le journal de l'interface.
-fn spawn_joiner(cfg: &Config, url: &str) -> Option<Child> {
+fn spawn_joiner(cfg: &Config, args: &[&str]) -> Option<Child> {
     let mut parts = cfg.join_cmd.split_whitespace();
     let program = parts.next()?;
     let child = tokio::process::Command::new(program)
         .args(parts)
-        .arg(url)
-        .arg("--name")
-        .arg(&cfg.name)
+        .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -279,7 +309,11 @@ fn spawn_joiner(cfg: &Config, url: &str) -> Option<Child> {
 }
 
 async fn stop_meeting(app: &Arc<App>, mut r: Running, why: &str) {
-    info!("👋 Le bot quitte la réunion ({why})");
+    if r.browsing {
+        info!("🧭 Navigateur du bot fermé ({why})");
+    } else {
+        info!("👋 Le bot quitte la réunion ({why})");
+    }
     r.cancel.cancel();
     if tokio::time::timeout(Duration::from_secs(5), &mut r.session).await.is_err() {
         r.session.abort();
@@ -423,6 +457,11 @@ fn platform_of(link: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+async fn browse(State(app): State<Arc<App>>) -> Response {
+    let _ = app.ctl.send(Command::Browse).await;
+    (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
 }
 
 async fn leave(State(app): State<Arc<App>>) -> Response {

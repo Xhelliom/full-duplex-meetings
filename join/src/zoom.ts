@@ -6,7 +6,7 @@
 // faire une fois dans la fenêtre du bot.
 import type { Page } from "playwright";
 
-import { clickFirst, sleep, where, type Driver } from "./util.js";
+import { clickFirst, Refused, sleep, visibleText, where, type Driver } from "./util.js";
 
 const JOIN = /^\s*(join|rejoindre|participer)\s*$/i;
 const JOIN_AUDIO = /join audio by computer|rejoindre l'audio (par|depuis l')ordinateur|join with computer audio|audio de l'ordinateur/i;
@@ -33,11 +33,7 @@ async function inCall(page: Page): Promise<boolean> {
   return (await page.getByRole("button", { name: LEAVE, includeHidden: true }).count().catch(() => 0)) > 0;
 }
 
-async function refused(page: Page): Promise<string | null> {
-  const el = page.getByText(REFUSED).first();
-  if (!(await el.isVisible().catch(() => false))) return null;
-  return ((await el.textContent().catch(() => "")) ?? "").trim().slice(0, 120);
-}
+const refused = (page: Page) => visibleText(page, REFUSED);
 
 async function joinZoom(page: Page, url: string, displayName: string, log: (m: string) => void): Promise<boolean> {
   const web = webClientUrl(url);
@@ -53,10 +49,7 @@ async function joinZoom(page: Page, url: string, displayName: string, log: (m: s
     log(`nom saisi : ${displayName}`);
   } catch {
     const why = await refused(page);
-    if (why) {
-      log(`⚠️  Zoom refuse l'entrée : « ${why} »`);
-      return false;
-    }
+    if (why) throw new Refused(`Zoom refuse l'entrée : « ${why} »`);
     log("pas de champ nom (compte Zoom connecté, ou CAPTCHA à faire dans la fenêtre du bot)");
   }
   await cameraOff(page, log, "avant d'entrer");
@@ -77,10 +70,7 @@ async function joinZoom(page: Page, url: string, displayName: string, log: (m: s
       return true;
     }
     const why = await refused(page);
-    if (why) {
-      log(`⚠️  entrée refusée : « ${why} »`);
-      return false;
-    }
+    if (why) throw new Refused(`entrée refusée : « ${why} »`);
     await sleep(2_000);
   }
   if (!page.isClosed()) log("⚠️  toujours pas admis après 10 min");

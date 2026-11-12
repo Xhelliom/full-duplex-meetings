@@ -6,7 +6,7 @@
 // appel vidéo ») : connecter une fois un compte Google dans le profil du bot règle le problème.
 import type { Page } from "playwright";
 
-import { clickFirst, sleep, where, type Driver } from "./util.js";
+import { clickFirst, Refused, sleep, visibleText, where, type Driver } from "./util.js";
 
 const NAME_FIELD = /your name|votre nom|nom/i;
 /** « Participer » (compte de l'organisation) ou « Demander à participer » (invité). */
@@ -17,7 +17,7 @@ const DISMISS = /^\s*(got it|ok|j'ai compris|fermer|dismiss|close)\s*$/i;
 /** Plus dans l'appel : départ, exclusion, fin, retour à l'accueil. */
 const ENDED = /you left the meeting|vous avez quitté la réunion|you('ve| have) been removed|vous avez été (exclu|retiré)|the call has ended|l'appel est terminé|la réunion est terminée|return to home screen|revenir à l'écran d'accueil/i;
 /** Entrée refusée ou impossible. */
-const REFUSED = /can't join this (video )?call|ne pouvez pas participer|denied your request|a refusé votre demande|no one responded|personne n'a répondu/i;
+const REFUSED = /can't join this (video )?call|check your meeting code|vérifiez (le|votre) code|invalid video call name|nom d'appel vidéo (non valide|incorrect)|ne pouvez pas participer|denied your request|a refusé votre demande|no one responded|personne n'a répondu/i;
 const ALONE = /you're the only one here|vous êtes (le seul|la seule|seul|seule) (participant|personne|ici)/i;
 const NO_CONTROLS_MS = 90_000;
 
@@ -25,11 +25,7 @@ async function inCall(page: Page): Promise<boolean> {
   return (await page.getByRole("button", { name: LEAVE, includeHidden: true }).count().catch(() => 0)) > 0;
 }
 
-async function refused(page: Page): Promise<string | null> {
-  const el = page.getByText(REFUSED).first();
-  if (!(await el.isVisible().catch(() => false))) return null;
-  return ((await el.textContent().catch(() => "")) ?? "").trim().slice(0, 120);
-}
+const refused = (page: Page) => visibleText(page, REFUSED);
 
 async function joinMeet(page: Page, url: string, displayName: string, log: (m: string) => void): Promise<boolean> {
   log("ouverture du lien Google Meet");
@@ -44,10 +40,7 @@ async function joinMeet(page: Page, url: string, displayName: string, log: (m: s
     log(`nom saisi : ${displayName}`);
   } catch {
     const why = await refused(page);
-    if (why) {
-      log(`⚠️  Google Meet refuse l'entrée : « ${why} » — connectez un compte Google dans la fenêtre du bot (VNC)`);
-      return false;
-    }
+    if (why) throw new Refused(`Google Meet refuse l'entrée : « ${why} » — connectez un compte Google au bot (bouton « Ouvrir le navigateur du bot »)`);
     log("pas de champ nom (profil connecté à un compte Google ?)");
   }
   await cameraOff(page, log, "avant d'entrer");
@@ -67,10 +60,7 @@ async function joinMeet(page: Page, url: string, displayName: string, log: (m: s
       return true;
     }
     const why = await refused(page);
-    if (why) {
-      log(`⚠️  entrée refusée : « ${why} »`);
-      return false;
-    }
+    if (why) throw new Refused(`entrée refusée : « ${why} »`);
     await sleep(2_000);
   }
   if (!page.isClosed()) log("⚠️  toujours pas admis après 10 min");

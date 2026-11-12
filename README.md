@@ -1,6 +1,6 @@
 # full-duplex-meetings
 
-Un **participant IA** dans vos réunions Microsoft Teams, avec **OpenAI GPT-Live** (`gpt-live-1`), le modèle vocal
+Un **participant IA** dans vos réunions **Microsoft Teams, Google Meet et Zoom**, avec **OpenAI GPT-Live** (`gpt-live-1`), le modèle vocal
 full duplex. Il rejoint la réunion avec sa propre identité, écoute en permanence, et prend part à la conversation
 naturellement, comme un collègue :
 
@@ -33,8 +33,13 @@ Puis ouvrez **http://localhost:8080**. Tout se fait dans l'interface :
 | **Journal** | Ce qui se dit, ce qu'il répond, ses appels d'outils, ses erreurs, en direct. |
 
 Les réglages sont appliqués **à la prochaine réunion** : le prompt, la voix et les outils d'une session GPT-Live
-sont fixés à son ouverture. Admettez le bot depuis la salle d'attente de Teams. Pour voir son écran (et cliquer si
-l'interface de Teams a changé), ouvrez un client VNC sur `localhost:5900`.
+sont fixés à son ouverture. Collez le lien de la réunion : la plateforme (Teams, Google Meet, Zoom) est reconnue
+d'après le lien. Admettez le bot depuis la salle d'attente. Pour voir son écran (et cliquer si l'interface a
+changé), ouvrez la section « Écran du bot » de l'interface, ou un client VNC sur `localhost:5900`.
+
+**Google Meet** refuse souvent les invités dans un navigateur automatisé (« Vous ne pouvez pas participer à cet
+appel vidéo ») : connectez une fois un compte Google dans l'écran du bot. **Zoom** passe par son client web
+(`…/wc/join/…`) ; certaines réunions y exigent un compte Zoom ou un CAPTCHA, à faire aussi dans l'écran du bot.
 
 **Identité :** par défaut, il rejoint en **invité** sous son nom. Pour un vrai compte (sans salle d'attente),
 créez-lui un compte Microsoft et connectez-le une fois dans son navigateur via VNC. Le profil est gardé dans le

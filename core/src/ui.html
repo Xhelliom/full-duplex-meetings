@@ -112,12 +112,13 @@
 
   <section>
     <h2>Rejoindre une réunion</h2>
-    <p class="hint">Collez le lien de la réunion Teams. Le bot ouvre son propre navigateur, entre sous son nom, et prend part à la conversation. Admettez-le depuis la salle d'attente si besoin.</p>
+    <p class="hint">Collez le lien de la réunion : Teams, Google Meet ou Zoom, reconnu automatiquement. Le bot ouvre son propre navigateur, entre sous son nom, et prend part à la conversation. Admettez-le depuis la salle d'attente si besoin.</p>
     <div class="join">
-      <input id="meetingUrl" type="url" placeholder="https://teams.microsoft.com/l/meetup-join/…" autocomplete="off">
+      <input id="meetingUrl" type="url" placeholder="https://teams.microsoft.com/… · https://meet.google.com/… · https://…zoom.us/j/…" autocomplete="off">
       <button id="joinBtn" class="primary">Rejoindre</button>
       <button id="leaveBtn" class="danger" disabled>Quitter</button>
     </div>
+    <small id="platform" class="aimsg"></small>
     <div id="statusLine" class="status-line"></div>
   </section>
 
@@ -462,6 +463,24 @@ async function refreshStatus() {
     if (JSON.stringify(s.mcp) !== JSON.stringify(mcpStatus)) { mcpStatus = s.mcp || []; renderMcpStatus(); }
   } catch (e) { $("statusLine").className = "status-line error"; $("statusLine").textContent = e.message; }
 }
+// Même règle que fdm-join (join/src/platform.ts) et le serveur.
+function platformOf(link) {
+  let host;
+  try { host = new URL(link.trim()).hostname; } catch { return null; }
+  if (/(^|\.)teams\.(microsoft|live)\.com$/.test(host)) return "Microsoft Teams";
+  if (host === "meet.google.com") return "Google Meet";
+  if (/(^|\.)zoom\.us$/.test(host)) return "Zoom";
+  return "";
+}
+function showPlatform() {
+  const link = $("meetingUrl").value.trim();
+  const p = platformOf(link);
+  if (!link) say("platform", "");
+  else if (p === null) say("platform", "Ce n'est pas un lien complet (https://…)", true);
+  else if (!p) say("platform", "Lien non reconnu : Teams, Google Meet ou Zoom seulement", true);
+  else say("platform", `Réunion ${p}` + (p === "Google Meet" ? " — en invité, Google peut refuser un navigateur automatisé : connectez un compte Google dans l'écran du bot si besoin" : ""));
+}
+$("meetingUrl").oninput = showPlatform;
 $("joinBtn").onclick = async () => {
   try { await api("/api/join", { method: "POST", body: JSON.stringify({ url: $("meetingUrl").value }) }); refreshStatus(); }
   catch (e) { $("statusLine").className = "status-line error"; $("statusLine").textContent = e.message; }

@@ -402,8 +402,27 @@ async fn join(State(app): State<Arc<App>>, Json(body): Json<JoinBody>) -> Respon
     if !url.starts_with("https://") {
         return bad("collez le lien complet de la réunion (https://…)");
     }
+    if platform_of(&url).is_none() {
+        return bad("lien non reconnu : Teams, Google Meet ou Zoom seulement");
+    }
+    info!("🔗 Réunion {}", platform_of(&url).unwrap_or("?"));
     let _ = app.ctl.send(Command::Join(url)).await;
     (StatusCode::ACCEPTED, Json(json!({"ok": true}))).into_response()
+}
+
+/// Plateforme d'après le lien (même règle que fdm-join, join/src/platform.ts).
+fn platform_of(link: &str) -> Option<&'static str> {
+    let host = reqwest::Url::parse(link).ok()?.host_str()?.to_ascii_lowercase();
+    let under = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+    if under("teams.microsoft.com") || under("teams.live.com") {
+        Some("Microsoft Teams")
+    } else if host == "meet.google.com" {
+        Some("Google Meet")
+    } else if under("zoom.us") {
+        Some("Zoom")
+    } else {
+        None
+    }
 }
 
 async fn leave(State(app): State<Arc<App>>) -> Response {
@@ -510,4 +529,19 @@ async fn logs_sse(State(app): State<Arc<App>>) -> Sse<impl Stream<Item = Result<
         }
     });
     Sse::new(history.chain(live)).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::platform_of;
+
+    #[test]
+    fn plateforme_d_apres_le_lien() {
+        assert_eq!(platform_of("https://teams.microsoft.com/l/meetup-join/19%3ameeting_x/0"), Some("Microsoft Teams"));
+        assert_eq!(platform_of("https://teams.live.com/meet/9361234"), Some("Microsoft Teams"));
+        assert_eq!(platform_of("https://meet.google.com/abc-defg-hij"), Some("Google Meet"));
+        assert_eq!(platform_of("https://us05web.zoom.us/j/81234567890?pwd=abc"), Some("Zoom"));
+        assert_eq!(platform_of("https://evil.com/teams.microsoft.com"), None);
+        assert_eq!(platform_of("https://notzoom.us/j/1"), None);
+    }
 }

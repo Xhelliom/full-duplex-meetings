@@ -7,7 +7,10 @@ import { parseArgs } from "node:util";
 import { RTC_LOG, launchBotBrowser } from "./browser.js";
 import { AI_MIC, MEETING_SINK, devicesPresent, routeBrowserStreams } from "./devices.js";
 import { platformOf } from "./platform.js";
-import { cameraOff, joinTeams, leaveTeams, waitForEnd, waitInCall } from "./teams.js";
+import { meet } from "./meet.js";
+import { zoom } from "./zoom.js";
+import { teams } from "./teams.js";
+import type { Driver } from "./util.js";
 
 const log = (m: string) => console.log(`${new Date().toLocaleTimeString("fr-FR")} [fdm-join] ${m}`);
 
@@ -31,9 +34,11 @@ if (!devicesPresent()) {
   console.error(`Périphériques « ${MEETING_SINK} » / « ${AI_MIC} » absents : lancez d'abord \`fdm\`.`);
   process.exit(1);
 }
+const drivers: Partial<Record<string, Driver>> = { teams, meet, zoom };
 const platform = platformOf(url);
-if (platform !== "teams") {
-  console.error(`Plateforme non gérée pour l'instant : ${platform} (seul Teams l'est).`);
+const driver = drivers[platform];
+if (!driver) {
+  log(`⚠️  plateforme non gérée : ${platform === "unknown" ? "lien non reconnu" : platform} (Teams, Google Meet et Zoom le sont)`);
   process.exit(1);
 }
 
@@ -48,7 +53,7 @@ const context = await launchBotBrowser({ profileDir, headless: values.headless!,
 });
 const page = context.pages()[0] ?? (await context.newPage());
 const routing = setInterval(() => routeBrowserStreams(profileDir, log), 3000);
-// État des connexions WebRTC de Teams (voir watchConnections) : utile quand un appel est coupé.
+// État des connexions WebRTC de la réunion (voir watchConnections) : utile quand un appel est coupé.
 page.on("console", (msg) => {
   const text = msg.text();
   if (text.startsWith(RTC_LOG)) log(text.slice(RTC_LOG.length).trim());
@@ -60,7 +65,7 @@ async function stop(code = 0): Promise<never> {
     stopping = true;
     clearInterval(routing);
     log("le bot quitte la réunion");
-    await leaveTeams(page, log).catch(() => {});
+    await driver!.leave(page, log).catch(() => {});
     await context.close().catch(() => {});
   }
   process.exit(code);
@@ -70,7 +75,7 @@ process.on("SIGTERM", () => void stop());
 context.on("close", () => void stop()); // fenêtre fermée à la main
 
 try {
-  await joinTeams(page, url, values.name!, log);
+  await driver.join(page, url, values.name!, log);
 } catch (e) {
   // On garde la fenêtre : on peut finir à la main (l'audio du bot est déjà branché).
   log(`⚠️  entrée automatique impossible (${(e as Error).message.split("\n")[0]}) — finissez dans la fenêtre du bot`);
@@ -78,7 +83,7 @@ try {
 
 // Une fois dans l'appel (automatiquement ou à la main), on surveille la fin de la réunion pour
 // ne pas laisser tourner la session gpt-live : le service voit le navigateur s'arrêter et la ferme.
-await waitInCall(page);
-await cameraOff(page, log, "dans l'appel");
-await waitForEnd(page, log);
+await driver.waitInCall(page);
+await driver.cameraOff(page, log, "dans l'appel");
+await driver.waitForEnd(page, log);
 await stop(0);

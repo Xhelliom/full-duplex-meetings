@@ -171,7 +171,7 @@ ton domaine et que tu as quelque chose de vraiment utile à apporter.",
         };
         let mut s = format!(
             "# Rôle
-Tu es {name}, un participant à part entière d'une réunion en ligne (Microsoft Teams), en direct, avec plusieurs \
+Tu es {name}, un participant à part entière d'une réunion en ligne (Teams, Google Meet ou Zoom), en direct, avec plusieurs \
 personnes. Tu es une IA et tu ne le caches pas si on te le demande, mais tu te comportes comme un collègue humain \
 attentif et bien élevé.{expertise}
 

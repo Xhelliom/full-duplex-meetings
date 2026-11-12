@@ -3,31 +3,12 @@
 // cliquer soi-même dans la fenêtre — l'audio du bot est déjà branché.
 import type { Locator, Page } from "playwright";
 
+import { clickFirst, sleep, where as whereOf, type Driver } from "./util.js";
+
 const CONTINUE_IN_BROWSER = /continue on this browser|continuer sur ce navigateur|join on the web|rejoindre sur le web/i;
 const JOIN_NOW = /^\s*(join now|rejoindre maintenant|join|rejoindre)\s*$/i;
 const LEAVE = /^(leave|quitter|raccrocher|hang ?up|end call)/i;
 const NAME_FIELD = /name|nom/i;
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function clickFirst(locators: Locator[], timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const loc of locators) {
-      try {
-        const el = loc.first();
-        if (await el.isVisible()) {
-          await el.click();
-          return true;
-        }
-      } catch {
-        /* l'interface bouge encore */
-      }
-    }
-    await sleep(500);
-  }
-  return false;
-}
 
 export async function joinTeams(page: Page, url: string, displayName: string, log: (m: string) => void): Promise<boolean> {
   log("ouverture du lien de réunion");
@@ -154,10 +135,7 @@ export async function waitForEnd(page: Page, log: (m: string) => void, aloneMs =
   let endedSeen = 0;
   let aloneSince = 0;
   let rejoins = 0;
-  const where = async () => {
-    const u = new URL(page.url());
-    return `page « ${await page.title().catch(() => "?")} », ${u.host}${u.pathname}`;
-  };
+  const where = () => whereOf(page);
   for (;;) {
     await sleep(5_000);
     if (page.isClosed()) {
@@ -284,3 +262,5 @@ export async function leaveTeams(page: Page, log: (m: string) => void): Promise<
   await page.close({ runBeforeUnload: true }).catch(() => {});
   await sleep(2_000);
 }
+
+export const teams: Driver = { join: joinTeams, waitInCall, cameraOff, waitForEnd: (p, l) => waitForEnd(p, l), leave: leaveTeams };
